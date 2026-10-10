@@ -1,0 +1,17 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment and sensitive credential files
+.env
+atlas-credentials.env
+
+# Logs
+*.log
+.system_generated/
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
