@@ -2,6 +2,7 @@ import os
 import sys
 import logging
 import html
+import re
 import telebot
 from telebot import types
 
@@ -9,6 +10,16 @@ import config
 import database
 from api_client import api_client
 import sync_worker
+
+
+def clean_html_tags(text: str) -> str:
+    """Removes raw <tg-emoji> and unsupported tags, leaving clean unicode emojis intact."""
+    if not text:
+        return ""
+    # Extract inner content/emoji from <tg-emoji>...</tg-emoji>
+    cleaned = re.sub(r'<tg-emoji[^>]*>(.*?)</tg-emoji>', r'\1', str(text), flags=re.DOTALL)
+    cleaned = re.sub(r'</?tg-emoji[^>]*>', '', cleaned)
+    return cleaned.strip()
 
 # Set stdout encoding for Windows
 if sys.platform == "win32":
@@ -102,7 +113,8 @@ def build_products_keyboard(products: list, page: int = 0):
 
     for p in current_page_products:
         p_id = str(p.get("id") or p.get("_id", ""))
-        name = p.get("name_ar") or p.get("name_en") or "منتج"
+        raw_name = p.get("name_ar") or p.get("name_en") or "منتج"
+        name = clean_html_tags(raw_name)
         
         # Price extraction (your_price overrides store_price)
         price = p.get("your_price") if p.get("your_price") is not None else p.get("store_price", 0.0)
@@ -310,8 +322,10 @@ def handle_product_details(call: types.CallbackQuery):
         bot.answer_callback_query(call.id, "⚠️ المنتج غير متوفر حالياً.", show_alert=True)
         return
 
-    name = product.get("name_ar") or product.get("name_en") or "منتج بدون اسم"
-    desc = product.get("desc_ar") or product.get("desc_en") or "لا يوجد وصف إضافي."
+    raw_name = product.get("name_ar") or product.get("name_en") or "منتج بدون اسم"
+    name = clean_html_tags(raw_name)
+    raw_desc = product.get("desc_ar") or product.get("desc_en") or "لا يوجد وصف إضافي."
+    desc = clean_html_tags(raw_desc)
     
     price = product.get("your_price") if product.get("your_price") is not None else product.get("store_price", 0.0)
     try:
@@ -429,7 +443,8 @@ def handle_buy_button(call: types.CallbackQuery):
         return
 
     # Regular confirmation dialogue
-    name = product.get("name_ar") or product.get("name_en") or "منتج"
+    raw_name = product.get("name_ar") or product.get("name_en") or "منتج"
+    name = clean_html_tags(raw_name)
     is_manual = product.get("is_manual", False)
     delivery_type_str = "🤝 تسليم يدوي" if is_manual else "⚡ تسليم فوري"
 
@@ -526,7 +541,8 @@ def handle_confirm_purchase(call: types.CallbackQuery):
 def execute_purchase(chat_id: int, user: types.User, product: dict, prod_id: str, price: float, email: str = None, message_id_to_edit: int = None):
     """Core purchase logic: deducts balance (if configured), calls API, delivers product, notifies admin."""
     buyer_info = f"@{user.username}" if user.username else f"ID: {user.id} ({user.first_name})"
-    name = product.get("name_ar") or product.get("name_en") or "منتج"
+    raw_name = product.get("name_ar") or product.get("name_en") or "منتج"
+    name = clean_html_tags(raw_name)
     is_manual = product.get("is_manual", False)
 
     # 1. Deduct user balance in MongoDB if required

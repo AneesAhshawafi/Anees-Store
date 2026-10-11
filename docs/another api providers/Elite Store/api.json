@@ -1,0 +1,16 @@
+{
+    "ok": true,
+    "name": "Elite Tools Store Reseller API",
+    "documentation": "https://api.elitetoolz.store/docs",
+    "website": "https://elitetoolz.store",
+    "auth": "Send your key in the X-API-Key header.",
+    "endpoints": {
+        "products": "GET https://api.elitetoolz.store/api/reseller/products",
+        "balance": "GET https://api.elitetoolz.store/api/reseller/balance",
+        "order": "POST https://api.elitetoolz.store/api/reseller/buy"
+    },
+    "order_body": {
+        "productId": "PRODUCT_ID",
+        "quantity": 1
+    }
+}
