@@ -190,18 +190,25 @@ class TestAneesStoreBot(unittest.TestCase):
     def test_09_payment_providers_registry_and_binance_pay(self):
         """Verify payment providers modular architecture."""
         import payments
-        active = payments.get_active_providers()
-        self.assertGreater(len(active), 0, "At least one payment provider must be active")
+        orig_pay_id = config.BINANCE_PAY_ID
+        if not config.BINANCE_PAY_ID:
+            config.BINANCE_PAY_ID = "988320017"
 
-        prov = payments.get_provider("binance_pay")
-        self.assertIsNotNone(prov, "Binance Pay provider must be registered")
-        self.assertEqual(prov.id, "binance_pay")
+        try:
+            active = payments.get_active_providers()
+            self.assertGreater(len(active), 0, "At least one payment provider must be active")
 
-        instructions = prov.get_deposit_instructions(user_id=12345)
-        self.assertIn("account_id", instructions)
-        self.assertTrue(len(instructions["account_id"]) > 0)
-        self.assertEqual(instructions["currency"], "USDT")
-        print(f"\n[OK] test_09: Payments registry verified. Active providers: {[p.id for p in active]}")
+            prov = payments.get_provider("binance_pay")
+            self.assertIsNotNone(prov, "Binance Pay provider must be registered")
+            self.assertEqual(prov.id, "binance_pay")
+
+            instructions = prov.get_deposit_instructions(user_id=12345)
+            self.assertIn("account_id", instructions)
+            self.assertTrue(len(instructions["account_id"]) > 0)
+            self.assertEqual(instructions["currency"], "USDT")
+            print(f"\n[OK] test_09: Payments registry verified. Active providers: {[p.id for p in active]}")
+        finally:
+            config.BINANCE_PAY_ID = orig_pay_id
 
 
 if __name__ == "__main__":

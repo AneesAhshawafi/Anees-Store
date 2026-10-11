@@ -281,10 +281,17 @@ def claim_deposit_reference(
     Guaranteed unique via database index to prevent duplicate credits.
     """
     db = get_db()
+    prov = str(provider).lower()
+    ref = str(reference_id).strip()
+
+    # In mock db or as safety check, reject if already claimed
+    if is_mock_db() and is_deposit_reference_claimed(prov, ref):
+        return False
+
     now = datetime.now(timezone.utc)
     doc = {
-        "provider": str(provider).lower(),
-        "reference_id": str(reference_id).strip(),
+        "provider": prov,
+        "reference_id": ref,
         "user_id": int(user_id),
         "amount": round(float(amount), 2),
         "currency": currency,
@@ -294,9 +301,9 @@ def claim_deposit_reference(
     try:
         db.deposits.insert_one(doc)
         return True
-    except pymongo.errors.DuplicateKeyError:
-        return False
-    except Exception as e:
+    except (pymongo.errors.DuplicateKeyError, Exception) as e:
+        if isinstance(e, pymongo.errors.DuplicateKeyError) or "duplicate" in str(e).lower():
+            return False
         logger.error(f"Error claiming deposit reference {reference_id}: {e}")
         return False
 
@@ -512,7 +519,11 @@ def cache_products(products: list):
         try:
             db.products.bulk_write(operations, ordered=False)
         except Exception as e:
-            logger.error(f"Error bulk updating products: {e}")
+            if is_mock_db():
+                for op in operations:
+                    db.products.update_one(op._filter, op._doc, upsert=True)
+            else:
+                logger.error(f"Error bulk updating products: {e}")
 
 
 def get_cached_products() -> list:
@@ -665,7 +676,11 @@ def cache_elite_products(products: list):
         try:
             db.elite_products.bulk_write(operations, ordered=False)
         except Exception as e:
-            logger.error(f"Error bulk updating elite products: {e}")
+            if is_mock_db():
+                for op in operations:
+                    db.elite_products.update_one(op._filter, op._doc, upsert=True)
+            else:
+                logger.error(f"Error bulk updating elite products: {e}")
 
 
 def get_cached_elite_products() -> list:
