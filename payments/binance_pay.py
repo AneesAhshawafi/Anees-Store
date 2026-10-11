@@ -44,8 +44,9 @@ class BinancePayProvider(BasePaymentProvider):
         if now - self._last_time_sync < 300 and self._last_time_sync > 0:
             return  # Cache time offset for 5 minutes
 
+        base_url = (config.BINANCE_API_BASE_URL or "https://api.binance.com").rstrip("/")
         try:
-            resp = requests.get("https://api.binance.com/api/v3/time", timeout=5, proxies=self._get_proxies())
+            resp = requests.get(f"{base_url}/api/v3/time", timeout=5, proxies=self._get_proxies())
             if resp.status_code == 200:
                 server_time = resp.json().get("serverTime", int(now * 1000))
                 local_time = int(now * 1000)
@@ -114,10 +115,11 @@ class BinancePayProvider(BasePaymentProvider):
 
         # Query Binance SAPI transactions
         try:
+            base_url = (config.BINANCE_API_BASE_URL or "https://api.binance.com").rstrip("/")
             ts = self._get_timestamp()
             query = f"timestamp={ts}&recvWindow=60000"
             sig = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
-            url = f"https://api.binance.com/sapi/v1/pay/transactions?{query}&signature={sig}"
+            url = f"{base_url}/sapi/v1/pay/transactions?{query}&signature={sig}"
             headers = {"X-MBX-APIKEY": api_key}
             proxies = self._get_proxies()
 
@@ -131,7 +133,7 @@ class BinancePayProvider(BasePaymentProvider):
                     ts = self._get_timestamp()
                     query = f"timestamp={ts}&recvWindow=60000"
                     sig = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
-                    url = f"https://api.binance.com/sapi/v1/pay/transactions?{query}&signature={sig}"
+                    url = f"{base_url}/sapi/v1/pay/transactions?{query}&signature={sig}"
                     resp = requests.get(url, headers=headers, timeout=12, proxies=proxies)
 
             data = resp.json()

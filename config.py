@@ -46,4 +46,5 @@ BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 MIN_DEPOSIT_USDT = float(os.getenv("MIN_DEPOSIT_USDT", "0.10"))
 BINANCE_PROXY_URL = os.getenv("BINANCE_PROXY_URL", "")
+BINANCE_API_BASE_URL = os.getenv("BINANCE_API_BASE_URL", "https://api.binance.com")
 
