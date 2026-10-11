@@ -11,6 +11,7 @@ import database
 from api_client import api_client
 from elite_client import elite_client
 import sync_worker
+import payments
 
 
 def clean_html_tags(text: str) -> str:
@@ -59,6 +60,15 @@ def notify_admin(message_html: str):
     for admin_id in config.ADMIN_IDS:
         try:
             bot.send_message(admin_id, message_html, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Failed to notify admin {admin_id}: {e}")
+
+
+def notify_admin_with_markup(message_html: str, reply_markup=None):
+    """Sends notification to all configured admins with optional inline keyboard."""
+    for admin_id in config.ADMIN_IDS:
+        try:
+            bot.send_message(admin_id, message_html, reply_markup=reply_markup, parse_mode="HTML")
         except Exception as e:
             logger.error(f"Failed to notify admin {admin_id}: {e}")
 
@@ -376,26 +386,25 @@ def handle_elite_products_menu(message: types.Message):
     )
 
 
-@bot.message_handler(func=lambda msg: msg.text in ("💰 رصيدي", "/balance"))
-def handle_balance_menu(message: types.Message):
-    """Handles '💰 رصيدي': shows user wallet balance & orders info."""
-    user = message.from_user
-    database.upsert_user(user.id, user.username, user.first_name)
-
-    balance = database.get_user_balance(user.id)
-    orders = database.get_user_orders(user.id, limit=50)
+def get_wallet_text(user, user_id: int) -> str:
+    """Formats wallet and account overview message."""
+    balance = database.get_user_balance(user_id)
+    orders = database.get_user_orders(user_id, limit=50)
+    total_dep = database.get_user_total_deposited(user_id)
+    total_spent = database.get_user_total_spent(user_id)
+    first_name = user.first_name if hasattr(user, "first_name") else "غير محدد"
 
     text = (
-        f"👤 <b>معلومات الحساب:</b>\n\n"
-        f"🏷️ <b>الاسم:</b> {html.escape(user.first_name or 'غير محدد')}\n"
-        f"🆔 <b>معرف الحساب:</b> <code>{user.id}</code>\n"
-        f"💰 <b>رصيدك في المتجر:</b> <code>${balance:.2f}</code>\n"
-        f"📦 <b>إجمالي طلباتك:</b> <code>{len(orders)}</code>\n\n"
-        "💬 <i>للشحن أو لأي استفسار، تواصل مع الدعم الفني والإدارة.</i>"
+        f"👤 <b>معلومات المحفظة والحساب:</b>\n\n"
+        f"🏷️ <b>الاسم:</b> {html.escape(first_name or 'غير محدد')}\n"
+        f"🆔 <b>معرف الحساب:</b> <code>{user_id}</code>\n"
+        f"💰 <b>الرصيد المتاح:</b> <code>${balance:.2f}</code>\n"
+        f"💳 <b>إجمالي الإيداعات:</b> <code>${total_dep:.2f}</code>\n"
+        f"🛍️ <b>إجمالي المشتريات:</b> <code>${total_spent:.2f}</code> ({len(orders)} طلب)\n\n"
+        "💡 <i>يمكنك شحن رصيدك فوراً أو استعراض سجل الحركات عبر الأزرار أدناه:</i>"
     )
 
-    # If admin, append store API balances
-    if is_admin(user.id):
+    if is_admin(user_id):
         api_bal_info = api_client.get_balance()
         api_bal = api_bal_info.get("balance", "N/A")
 
@@ -409,8 +418,30 @@ def handle_balance_menu(message: types.Message):
             f"💎 <b>رصيد المتجر 2 (Elite):</b> <code>${elite_bal}</code>\n"
             f"💡 للمزامنة استخدم الأمر: /sync"
         )
+    return text
 
-    bot.send_message(message.chat.id, text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+
+def build_wallet_inline_keyboard():
+    """Builds inline keyboard for user wallet view."""
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("💳 شحن الرصيد (إيداع)", callback_data="wallet_deposit"),
+        types.InlineKeyboardButton("📜 سجل الحركات", callback_data="wallet_history")
+    )
+    markup.add(
+        types.InlineKeyboardButton("🏪 منتجات المتجر 1", callback_data="nav_store1"),
+        types.InlineKeyboardButton("💎 منتجات المتجر 2", callback_data="nav_store2")
+    )
+    return markup
+
+
+@bot.message_handler(func=lambda msg: msg.text in ("💰 رصيدي", "/balance"))
+def handle_balance_menu(message: types.Message):
+    """Handles '💰 رصيدي': shows user wallet balance & orders info."""
+    user = message.from_user
+    database.upsert_user(user.id, user.username, user.first_name)
+    text = get_wallet_text(user, user.id)
+    bot.send_message(message.chat.id, text, reply_markup=build_wallet_inline_keyboard(), parse_mode="HTML")
 
 
 # ==========================================
@@ -420,6 +451,502 @@ def handle_balance_menu(message: types.Message):
 @bot.callback_query_handler(func=lambda call: call.data == "noop")
 def handle_noop(call: types.CallbackQuery):
     bot.answer_callback_query(call.id)
+
+
+# ==========================================
+# Callback Handlers: Wallet & Deposits
+# ==========================================
+
+@bot.callback_query_handler(func=lambda call: call.data == "wallet_main")
+def handle_wallet_main(call: types.CallbackQuery):
+    """Returns to the main wallet balance view."""
+    bot.answer_callback_query(call.id)
+    text = get_wallet_text(call.from_user, call.from_user.id)
+    markup = build_wallet_inline_keyboard()
+    try:
+        bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
+    except Exception:
+        bot.send_message(call.message.chat.id, text, reply_markup=markup, parse_mode="HTML")
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "wallet_deposit")
+def handle_wallet_deposit_menu(call: types.CallbackQuery):
+    """Shows active payment providers for deposit."""
+    bot.answer_callback_query(call.id)
+    active_providers = payments.get_active_providers()
+
+    if not active_providers:
+        bot.send_message(
+            call.message.chat.id,
+            "⚠️ <b>عذراً:</b> لا توجد طرق دفع مفعلة حالياً في النظام. يرجى التواصل مع إدارة المتجر.",
+            parse_mode="HTML"
+        )
+        return
+
+    text = (
+        "💳 <b>شحن وإيداع الرصيد في المحفظة:</b>\n\n"
+        "اختر وسيلة الدفع المناسبة لك أدناه للمتابعة:\n"
+        "⚡ <i>يتم التحقق الآلي من الحوالة وإيداع الرصيد فور إرسال إثبات التحويل!</i>"
+    )
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for p in active_providers:
+        markup.add(types.InlineKeyboardButton(f"{p.icon} {p.display_name}", callback_data=f"dep_prov_{p.id}"))
+
+    markup.add(types.InlineKeyboardButton("🔙 العودة للمحفظة", callback_data="wallet_main"))
+
+    try:
+        bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
+    except Exception:
+        bot.send_message(call.message.chat.id, text, reply_markup=markup, parse_mode="HTML")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("dep_prov_"))
+def handle_deposit_provider_selected(call: types.CallbackQuery):
+    """Displays deposit instructions for the chosen provider and asks for transaction proof."""
+    bot.answer_callback_query(call.id)
+    prov_id = call.data.replace("dep_prov_", "")
+    provider = payments.get_provider(prov_id)
+
+    if not provider or not provider.is_configured():
+        bot.send_message(call.message.chat.id, "⚠️ وسيلة الدفع هذه غير متوفرة حالياً.", parse_mode="HTML")
+        return
+
+    info = provider.get_deposit_instructions(call.from_user.id)
+    text = info.get("text", "")
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton("🔙 إلغاء والعودة", callback_data="wallet_deposit"))
+
+    try:
+        bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
+    except Exception:
+        bot.send_message(call.message.chat.id, text, reply_markup=markup, parse_mode="HTML")
+
+    prompt_msg = bot.send_message(
+        call.message.chat.id,
+        "✍️ <b>يرجى إرسال رقم الطلب (Order ID) أو معرف المعاملة الآن:</b>\n"
+        "<i>(أو أرسل /cancel لإلغاء العملية)</i>",
+        parse_mode="HTML"
+    )
+    bot.register_next_step_handler(prompt_msg, process_deposit_proof, prov_id)
+
+
+def process_deposit_proof(message: types.Message, provider_id: str):
+    """Processes customer's submitted payment proof (e.g. Binance Order ID)."""
+    proof_text = (message.text or "").strip()
+    if proof_text.lower() in ("/cancel", "الغاء", "إلغاء"):
+        bot.send_message(message.chat.id, "❌ تم إلغاء عملية الشحن.", reply_markup=get_main_keyboard())
+        return
+
+    provider = payments.get_provider(provider_id)
+    if not provider:
+        bot.send_message(message.chat.id, "⚠️ مزود الدفع غير متوفر.", reply_markup=get_main_keyboard())
+        return
+
+    if len(proof_text) < 4:
+        retry_msg = bot.send_message(
+            message.chat.id,
+            "⚠️ <b>رقم المعاملة قصير جداً أو غير صحيح!</b>\nيرجى إرسال رقم الطلب الصحيح أو أرسل /cancel للإلغاء:",
+            parse_mode="HTML"
+        )
+        bot.register_next_step_handler(retry_msg, process_deposit_proof, provider_id)
+        return
+
+    user = message.from_user
+
+    # Anti-replay: Check if already credited in DB
+    if database.is_deposit_reference_claimed(provider_id, proof_text):
+        bot.send_message(
+            message.chat.id,
+            "⚠️ <b>تنبيه أمني:</b> هذا الإيصال أو رقم المعاملة تم استخدامه وقيد رصيده مسبقاً في المحفظة!\n"
+            "لا يمكن استخدام نفس الإيصال أكثر من مرة.",
+            reply_markup=get_main_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    wait_msg = bot.send_message(
+        message.chat.id,
+        "⏳ <i>جارٍ فحص المعاملة مع مزود الدفع والتأكد من وصول الحوالة... يُرجى الانتظار لحظات.</i>",
+        parse_mode="HTML"
+    )
+
+    result = provider.verify_deposit(user.id, proof_text)
+
+    if result.get("verified"):
+        amount = float(result.get("amount", 0.0))
+        currency = result.get("currency", "USDT")
+        ref_id = str(result.get("reference_id", proof_text))
+
+        # Claim atomically in MongoDB
+        claimed = database.claim_deposit_reference(
+            provider=provider_id,
+            reference_id=ref_id,
+            user_id=user.id,
+            amount=amount,
+            currency=currency,
+            details=result.get("raw")
+        )
+
+        if not claimed:
+            bot.edit_message_text(
+                "⚠️ هذا الإيصال تم استخدامه مسبقاً!",
+                chat_id=message.chat.id,
+                message_id=wait_msg.message_id,
+                parse_mode="HTML"
+            )
+            return
+
+        # Credit wallet balance
+        before_bal = database.get_user_balance(user.id)
+        new_bal = database.add_user_balance(user.id, amount)
+
+        # Record wallet transaction
+        database.record_wallet_transaction(
+            user_id=user.id,
+            tx_type="deposit",
+            amount=amount,
+            balance_before=before_bal,
+            balance_after=new_bal,
+            payment_method=provider_id,
+            reference_id=ref_id,
+            details=f"شحن تلقائي عبر {provider.display_name}"
+        )
+
+        success_text = (
+            "🎉 <b>تم شحن رصيدك بنجاح!</b>\n\n"
+            f"💵 <b>المبلغ المودع:</b> <code>${amount:.2f} {currency}</code>\n"
+            f"💰 <b>رصيدك الجديد في المحفظة:</b> <code>${new_bal:.2f}</code>\n"
+            f"🆔 <b>رقم المعاملة:</b> <code>{ref_id}</code>\n\n"
+            "نتمنى لك تجربة تسوق ممتعة ومميزة! ❤️"
+        )
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            types.InlineKeyboardButton("🏪 منتجات المتجر 1", callback_data="nav_store1"),
+            types.InlineKeyboardButton("💎 منتجات المتجر 2", callback_data="nav_store2")
+        )
+        markup.add(types.InlineKeyboardButton("💰 عرض المحفظة", callback_data="wallet_main"))
+
+        try:
+            bot.edit_message_text(success_text, chat_id=message.chat.id, message_id=wait_msg.message_id, reply_markup=markup, parse_mode="HTML")
+        except Exception:
+            bot.send_message(message.chat.id, success_text, reply_markup=markup, parse_mode="HTML")
+
+        # Notify Admin
+        buyer_info = f"@{user.username}" if user.username else f"ID: {user.id} ({user.first_name})"
+        admin_text = (
+            "🔔 <b>إيداع جديد في محفظة المتجر!</b>\n\n"
+            f"👤 <b>العميل:</b> {html.escape(user.first_name or '')} ({buyer_info})\n"
+            f"🆔 <b>معرف العميل (ID):</b> <code>{user.id}</code>\n"
+            f"💵 <b>المبلغ المودع:</b> <code>${amount:.2f} {currency}</code>\n"
+            f"💰 <b>رصيد العميل بعد الإيداع:</b> <code>${new_bal:.2f}</code>\n"
+            f"💳 <b>طريقة الإيداع:</b> {provider.display_name}\n"
+            f"🆔 <b>رقم العملية:</b> <code>{ref_id}</code>\n"
+            "⚡ <b>حالة التحقق:</b> تم الفحص الآلي وإيداع الرصيد بنجاح."
+        )
+        notify_admin(admin_text)
+
+    else:
+        # Automated verification could not confirm
+        error_msg = result.get("error", "لم يتم العثور على المعاملة.")
+        pending_id = database.create_pending_deposit(
+            user_id=user.id,
+            provider=provider_id,
+            reference_id=proof_text,
+            user_note=error_msg
+        )
+
+        fail_text = (
+            "⚠️ <b>تعذر التحقق التلقائي من رقم المعاملة:</b>\n"
+            f"<blockquote>{html.escape(error_msg)}</blockquote>\n\n"
+            "💡 <b>ماذا يمكنك أن تفعل؟</b>\n"
+            "• تأكد أنك نسخت <b>رقم الطلب (Order ID)</b> الصحيح من إيصال بينانس.\n"
+            "• قد يستغرق ظهور الحوالة في النظام ثوانٍ معدودة، يمكنك المحاولة مرة أخرى.\n"
+            "• أو اضغط على <b>📩 إرسال للإدارة للمراجعة</b> وسيقوم فريق العمل بفحصها وشحنها لك فوراً."
+        )
+
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(
+            types.InlineKeyboardButton("📩 إرسال للإدارة للمراجعة الفورية", callback_data=f"dep_review_{pending_id}"),
+            types.InlineKeyboardButton("🔄 إعادة المحاولة", callback_data=f"dep_prov_{provider_id}"),
+            types.InlineKeyboardButton("🔙 العودة للمحفظة", callback_data="wallet_main")
+        )
+
+        try:
+            bot.edit_message_text(fail_text, chat_id=message.chat.id, message_id=wait_msg.message_id, reply_markup=markup, parse_mode="HTML")
+        except Exception:
+            bot.send_message(message.chat.id, fail_text, reply_markup=markup, parse_mode="HTML")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("dep_review_"))
+def handle_deposit_request_review(call: types.CallbackQuery):
+    """Customer submits pending deposit for admin review."""
+    pending_id = call.data.replace("dep_review_", "")
+    pending = database.get_pending_deposit(pending_id)
+
+    if not pending:
+        bot.answer_callback_query(call.id, "⚠️ الطلب غير متوفر أو تمت معالجته.", show_alert=True)
+        return
+
+    user = call.from_user
+    buyer_info = f"@{user.username}" if user.username else f"ID: {user.id} ({user.first_name})"
+
+    bot.edit_message_text(
+        "⏳ <b>تم إرسال طلب الشحن إلى إدارة المتجر للمراجعة الفورية!</b>\n\n"
+        f"🆔 <b>معرف الطلب الداخلي:</b> <code>{pending_id}</code>\n"
+        f"🔢 <b>رقم المعاملة:</b> <code>{pending.get('reference_id')}</code>\n\n"
+        "سيصلك إشعار فوري في البوت فور مراجعة الإدارة وتأكيد الإيداع في محفظتك. شكراً لصبرك! ❤️",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        parse_mode="HTML"
+    )
+    bot.answer_callback_query(call.id, "تم إرسال الطلب للإدارة بنجاح!")
+
+    # Notify Admins with action buttons
+    admin_markup = types.InlineKeyboardMarkup(row_width=2)
+    admin_markup.add(
+        types.InlineKeyboardButton("✅ موافقة وشحن", callback_data=f"adm_app_{pending_id}"),
+        types.InlineKeyboardButton("❌ رفض", callback_data=f"adm_rej_{pending_id}")
+    )
+    admin_text = (
+        "📩 <b>طلب شحن رصيد معلق يحتاج مراجعة الإدارة!</b>\n\n"
+        f"🆔 <b>معرف الطلب:</b> <code>{pending_id}</code>\n"
+        f"👤 <b>العميل:</b> {html.escape(user.first_name or '')} ({buyer_info})\n"
+        f"🆔 <b>معرف العميل (ID):</b> <code>{user.id}</code>\n"
+        f"💳 <b>وسيلة الدفع:</b> {pending.get('provider')}\n"
+        f"🔢 <b>رقم العملية المقدم:</b> <code>{pending.get('reference_id')}</code>\n\n"
+        "💡 <i>تحقق من تطبيق الدفع، ثم اضغط على موافقة لشحن الرصيد للعميل أو رفض.</i>"
+    )
+    notify_admin_with_markup(admin_text, admin_markup)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_app_"))
+def handle_admin_approve_deposit(call: types.CallbackQuery):
+    """Admin clicks approve on pending deposit."""
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id, "⛔ خاص بالإدارة فقط.")
+        return
+
+    pending_id = call.data.replace("adm_app_", "")
+    pending = database.get_pending_deposit(pending_id)
+    if not pending or pending.get("status") != "pending":
+        bot.answer_callback_query(call.id, "⚠️ تمت معالجة هذا الطلب مسبقاً.", show_alert=True)
+        return
+
+    msg = bot.send_message(
+        call.message.chat.id,
+        f"💵 <b>الموافقة على طلب الشحن <code>{pending_id}</code>:</b>\n\n"
+        f"العميل: <code>{pending.get('user_id')}</code>\n"
+        f"رقم الإيصال: <code>{pending.get('reference_id')}</code>\n\n"
+        "أدخل <b>المبلغ بالدولار ($)</b> الذي تريد إيداعه في محفظة العميل:\n"
+        "<i>(مثال: <code>5</code> أو <code>10.5</code> أو أرسل /cancel لإلغاء الأمر)</i>",
+        parse_mode="HTML"
+    )
+    bot.register_next_step_handler(msg, process_admin_manual_deposit, pending_id, call.message.message_id)
+    bot.answer_callback_query(call.id)
+
+
+def process_admin_manual_deposit(message: types.Message, pending_id: str, admin_msg_id: int):
+    """Processes admin manual deposit amount input."""
+    amount_str = (message.text or "").strip()
+    if amount_str.lower() in ("/cancel", "الغاء", "إلغاء"):
+        bot.send_message(message.chat.id, "❌ تم إلغاء العملية.")
+        return
+
+    try:
+        amount = float(amount_str)
+        if amount <= 0:
+            raise ValueError()
+    except ValueError:
+        msg = bot.send_message(message.chat.id, "❌ المبلغ غير صالح! أدخل رقماً صحيحاً (مثال: 10) أو أرسل /cancel:")
+        bot.register_next_step_handler(msg, process_admin_manual_deposit, pending_id, admin_msg_id)
+        return
+
+    pending = database.get_pending_deposit(pending_id)
+    if not pending or pending.get("status") != "pending":
+        bot.send_message(message.chat.id, "⚠️ تمت معالجة هذا الطلب مسبقاً.")
+        return
+
+    target_user_id = pending.get("user_id")
+    ref_id = pending.get("reference_id")
+    provider = pending.get("provider", "manual")
+
+    # Mark resolved in DB
+    database.resolve_pending_deposit(pending_id, status="approved", resolved_by=message.from_user.id, final_amount=amount)
+    database.claim_deposit_reference(provider, ref_id, target_user_id, amount, "USDT", {"approved_by": message.from_user.id})
+
+    # Credit user balance
+    before_bal = database.get_user_balance(target_user_id)
+    new_bal = database.add_user_balance(target_user_id, amount)
+
+    # Record wallet transaction
+    database.record_wallet_transaction(
+        user_id=target_user_id,
+        tx_type="deposit",
+        amount=amount,
+        balance_before=before_bal,
+        balance_after=new_bal,
+        payment_method=f"{provider}_manual",
+        reference_id=ref_id,
+        details=f"موافقة يدوية من الإدارة بواسطة {message.from_user.id}"
+    )
+
+    bot.send_message(
+        message.chat.id,
+        f"✅ <b>تم شحن رصيد العميل بنجاح!</b>\n\n"
+        f"👤 <b>العميل:</b> <code>{target_user_id}</code>\n"
+        f"💵 <b>المبلغ المودع:</b> <code>${amount:.2f}</code>\n"
+        f"💰 <b>رصيده الجديد:</b> <code>${new_bal:.2f}</code>",
+        parse_mode="HTML"
+    )
+
+    # Notify customer
+    try:
+        bot.send_message(
+            target_user_id,
+            f"🎉 <b>تمت الموافقة على طلب الشحن الخاص بك!</b>\n\n"
+            f"💵 <b>المبلغ المضاف:</b> <code>${amount:.2f} USDT</code>\n"
+            f"💰 <b>رصيدك الحالي في المحفظة:</b> <code>${new_bal:.2f}</code>\n"
+            f"🆔 <b>رقم المعاملة:</b> <code>{ref_id}</code>\n\n"
+            "شكراً لتسوقك معنا! نتشرف بخدمتك دائماً ❤️",
+            reply_markup=build_wallet_inline_keyboard(),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Failed to notify user {target_user_id} of approved deposit: {e}")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_rej_"))
+def handle_admin_reject_deposit(call: types.CallbackQuery):
+    """Admin rejects pending deposit."""
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id, "⛔ خاص بالإدارة فقط.")
+        return
+
+    pending_id = call.data.replace("adm_rej_", "")
+    pending = database.get_pending_deposit(pending_id)
+    if not pending or pending.get("status") != "pending":
+        bot.answer_callback_query(call.id, "⚠️ تمت معالجة هذا الطلب مسبقاً.", show_alert=True)
+        return
+
+    database.resolve_pending_deposit(pending_id, status="rejected", resolved_by=call.from_user.id)
+    target_user_id = pending.get("user_id")
+
+    try:
+        bot.edit_message_text(
+            f"❌ <b>تم رفض طلب الشحن <code>{pending_id}</code> بواسطة الإدارة.</b>",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+    bot.answer_callback_query(call.id, "تم رفض الطلب.")
+
+    # Notify customer
+    try:
+        bot.send_message(
+            target_user_id,
+            f"❌ <b>عذراً، تم رفض طلب الشحن رقم <code>{pending_id}</code> من قِبل الإدارة.</b>\n\n"
+            "تأكد من صحة رقم المعاملة وتحويل المبلغ، أو تواصل مع الدعم الفني للاستفسار.",
+            reply_markup=get_main_keyboard(),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Failed to notify user {target_user_id} of rejected deposit: {e}")
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "wallet_history")
+def handle_wallet_history(call: types.CallbackQuery):
+    """Displays last wallet transactions for the user."""
+    bot.answer_callback_query(call.id)
+    user = call.from_user
+    txs = database.get_user_wallet_history(user.id, limit=8)
+
+    if not txs:
+        text = (
+            "📜 <b>سجل حركات المحفظة:</b>\n\n"
+            "📭 لا توجد حركات مالية مسجلة في محفظتك حتى الآن.\n"
+            "اشحن محفظتك الآن واستمتع بالتسوق والشراء السريع!"
+        )
+    else:
+        lines = ["📜 <b>سجل آخر حركات المحفظة:</b>\n"]
+        for t in txs:
+            t_type = t.get("type")
+            amt = float(t.get("amount", 0.0))
+            bal_after = float(t.get("balance_after", 0.0))
+            date_val = t.get("created_at")
+            date_str = date_val.strftime("%m/%d %H:%M") if date_val else ""
+
+            if t_type == "deposit":
+                badge = "➕ إيداع"
+                amt_str = f"+${amt:.2f}"
+            elif t_type in ("purchase_store1", "purchase_store2"):
+                badge = "➖ شراء"
+                amt_str = f"-${abs(amt):.2f}"
+            elif t_type == "refund":
+                badge = "🔄 استرجاع"
+                amt_str = f"+${abs(amt):.2f}"
+            else:
+                badge = "⚙️ تسوية"
+                amt_str = f"${amt:.2f}"
+
+            ref_str = f" | {t.get('reference_id')}" if t.get("reference_id") else ""
+            lines.append(f"• <b>{badge}:</b> <code>{amt_str}</code> (الرصيد: <code>${bal_after:.2f}</code>)\n  🕒 {date_str}{ref_str}")
+
+        text = "\n".join(lines)
+
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("💳 شحن الرصيد", callback_data="wallet_deposit"),
+        types.InlineKeyboardButton("🔙 العودة للمحفظة", callback_data="wallet_main")
+    )
+
+    try:
+        bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
+    except Exception:
+        bot.send_message(call.message.chat.id, text, reply_markup=markup, parse_mode="HTML")
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "nav_store1")
+def handle_nav_store1(call: types.CallbackQuery):
+    """Direct navigation shortcut to Store 1 products catalog."""
+    bot.answer_callback_query(call.id)
+    products = database.get_cached_products()
+    if not products:
+        products = api_client.get_products()
+
+    text = (
+        "🏪 <b>قائمة منتجات المتجر 1:</b>\n\n"
+        "⚡ <b>تسليم فوري:</b> تصلك بيانات الكود مباشرة فور الشراء.\n"
+        "🤝 <b>تسليم يدوي:</b> يتم تجهيزه وتسليمه لك من قِبل الإدارة.\n\n"
+        "👇 <i>اضغط على أي منتج لعرض تفاصيله والشراء:</i>"
+    )
+    try:
+        bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=build_products_keyboard(products, page=0), parse_mode="HTML")
+    except Exception:
+        bot.send_message(call.message.chat.id, text, reply_markup=build_products_keyboard(products, page=0), parse_mode="HTML")
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "nav_store2")
+def handle_nav_store2(call: types.CallbackQuery):
+    """Direct navigation shortcut to Store 2 products catalog."""
+    bot.answer_callback_query(call.id)
+    products = database.get_cached_elite_products()
+    if not products:
+        products = elite_client.get_products()
+
+    text = (
+        "💎 <b>قائمة منتجات المتجر 2 (Elite Tools):</b>\n\n"
+        "⚡ <b>جميع المنتجات تسليم فوري لحسابات وبيانات جاهزة!</b>\n\n"
+        "👇 <i>اضغط على أي منتج لعرض تفاصيله والشراء:</i>"
+    )
+    try:
+        bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=build_elite_products_keyboard(products, page=0), parse_mode="HTML")
+    except Exception:
+        bot.send_message(call.message.chat.id, text, reply_markup=build_elite_products_keyboard(products, page=0), parse_mode="HTML")
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("page_"))
@@ -753,13 +1280,23 @@ def handle_buy_button(call: types.CallbackQuery):
     if config.REQUIRE_USER_BALANCE:
         user_bal = database.get_user_balance(user.id)
         if user_bal < price_val:
+            diff = price_val - user_bal
             insufficient_text = (
-                f"⚠️ <b>رصيدك غير كافٍ لإتمام عملية الشراء!</b>\n\n"
+                f"⚠️ <b>رصيدك في المحفظة غير كافٍ لإتمام عملية الشراء!</b>\n\n"
                 f"💰 <b>رصيدك الحالي:</b> <code>${user_bal:.2f}</code>\n"
-                f"💵 <b>سعر المنتج:</b> <code>${price_val:.2f}</code>\n\n"
-                f"يرجى شحن رصيدك عبر التواصل مع إدارة المتجر للمتابعة."
+                f"💵 <b>سعر المنتج:</b> <code>${price_val:.2f}</code>\n"
+                f"🔻 <b>المبلغ المطلوب شحنه:</b> <code>${diff:.2f}</code>\n\n"
+                f"👇 يمكنك شحن محفظتك فوراً واختيار وسيلة الدفع المناسبة:"
             )
-            bot.send_message(call.message.chat.id, insufficient_text, parse_mode="HTML")
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            markup.add(
+                types.InlineKeyboardButton("💳 شحن الرصيد الآن", callback_data="wallet_deposit"),
+                types.InlineKeyboardButton("🔙 العودة للمنتج", callback_data=f"p_{prod_id}")
+            )
+            try:
+                bot.edit_message_text(insufficient_text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
+            except Exception:
+                bot.send_message(call.message.chat.id, insufficient_text, reply_markup=markup, parse_mode="HTML")
             bot.answer_callback_query(call.id)
             return
 
@@ -880,10 +1417,10 @@ def execute_purchase(chat_id: int, user: types.User, product: dict, prod_id: str
     is_manual = product.get("is_manual", False)
 
     # 1. Deduct user balance in MongoDB if required
+    before_bal = database.get_user_balance(user.id)
     balance_deducted = False
     if config.REQUIRE_USER_BALANCE:
-        user_bal = database.get_user_balance(user.id)
-        if user_bal < price:
+        if before_bal < price:
             fail_text = "⚠️ <b>رصيدك غير كافٍ لإتمام العملية!</b>"
             _send_or_edit(chat_id, fail_text, message_id_to_edit)
             return
@@ -903,6 +1440,17 @@ def execute_purchase(chat_id: int, user: types.User, product: dict, prod_id: str
         # Refund user balance if deducted
         if balance_deducted:
             database.add_user_balance(user.id, price)
+            new_bal = database.get_user_balance(user.id)
+            database.record_wallet_transaction(
+                user_id=user.id,
+                tx_type="refund",
+                amount=price,
+                balance_before=before_bal - price,
+                balance_after=new_bal,
+                payment_method="store1_refund",
+                reference_id=prod_id,
+                details=f"استرجاع قيمة: {name} (فشل الطلب لدى المزود)"
+            )
 
         error_raw = resp.get("error", "Unknown error")
         if "Insufficient balance" in error_raw:
@@ -920,6 +1468,20 @@ def execute_purchase(chat_id: int, user: types.User, product: dict, prod_id: str
     total_price = resp.get("total_price", price)
     status = resp.get("status", "completed" if not is_manual else "pending_manual")
     codes = resp.get("codes", [])
+
+    # Record wallet transaction
+    if balance_deducted:
+        new_bal = database.get_user_balance(user.id)
+        database.record_wallet_transaction(
+            user_id=user.id,
+            tx_type="purchase_store1",
+            amount=-total_price,
+            balance_before=before_bal,
+            balance_after=new_bal,
+            payment_method="wallet",
+            reference_id=order_id,
+            details=f"شراء: {name}"
+        )
 
     # Save order in MongoDB
     order_data = {
@@ -1031,13 +1593,23 @@ def handle_elite_buy_button(call: types.CallbackQuery):
     if config.REQUIRE_USER_BALANCE:
         user_bal = database.get_user_balance(user.id)
         if user_bal < price_val:
+            diff = price_val - user_bal
             insufficient_text = (
-                f"⚠️ <b>رصيدك غير كافٍ لإتمام عملية الشراء!</b>\n\n"
+                f"⚠️ <b>رصيدك في المحفظة غير كافٍ لإتمام عملية الشراء!</b>\n\n"
                 f"💰 <b>رصيدك الحالي:</b> <code>${user_bal:.2f}</code>\n"
-                f"💵 <b>سعر المنتج:</b> <code>${price_val:.2f}</code>\n\n"
-                f"يرجى شحن رصيدك عبر التواصل مع إدارة المتجر للمتابعة."
+                f"💵 <b>سعر المنتج:</b> <code>${price_val:.2f}</code>\n"
+                f"🔻 <b>المبلغ المطلوب شحنه:</b> <code>${diff:.2f}</code>\n\n"
+                f"👇 يمكنك شحن محفظتك فوراً واختيار وسيلة الدفع المناسبة:"
             )
-            bot.send_message(call.message.chat.id, insufficient_text, parse_mode="HTML")
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            markup.add(
+                types.InlineKeyboardButton("💳 شحن الرصيد الآن", callback_data="wallet_deposit"),
+                types.InlineKeyboardButton("🔙 العودة للمنتج", callback_data=f"s2_p_{prod_id}")
+            )
+            try:
+                bot.edit_message_text(insufficient_text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
+            except Exception:
+                bot.send_message(call.message.chat.id, insufficient_text, reply_markup=markup, parse_mode="HTML")
             bot.answer_callback_query(call.id)
             return
 
@@ -1115,10 +1687,10 @@ def execute_elite_purchase(chat_id: int, user: types.User, product: dict, prod_i
     name = clean_html_tags(raw_name)
 
     # 1. Deduct user balance in MongoDB if required
+    before_bal = database.get_user_balance(user.id)
     balance_deducted = False
     if config.REQUIRE_USER_BALANCE:
-        user_bal = database.get_user_balance(user.id)
-        if user_bal < price:
+        if before_bal < price:
             fail_text = "⚠️ <b>رصيدك غير كافٍ لإتمام العملية!</b>"
             _send_or_edit(chat_id, fail_text, message_id_to_edit)
             return
@@ -1132,6 +1704,17 @@ def execute_elite_purchase(chat_id: int, user: types.User, product: dict, prod_i
         # Refund user balance if deducted
         if balance_deducted:
             database.add_user_balance(user.id, price)
+            new_bal = database.get_user_balance(user.id)
+            database.record_wallet_transaction(
+                user_id=user.id,
+                tx_type="refund",
+                amount=price,
+                balance_before=before_bal - price,
+                balance_after=new_bal,
+                payment_method="elite_refund",
+                reference_id=prod_id,
+                details=f"استرجاع قيمة: {name} (فشل الطلب لدى المزود)"
+            )
 
         error_raw = resp.get("error", "Unknown error")
         if "balance" in str(error_raw).lower() or resp.get("http_status") == 402:
@@ -1152,6 +1735,20 @@ def execute_elite_purchase(chat_id: int, user: types.User, product: dict, prod_i
     except Exception:
         charged_val = price
     items = resp.get("items", [])
+
+    # Record wallet transaction
+    if balance_deducted:
+        new_bal = database.get_user_balance(user.id)
+        database.record_wallet_transaction(
+            user_id=user.id,
+            tx_type="purchase_store2",
+            amount=-charged_val,
+            balance_before=before_bal,
+            balance_after=new_bal,
+            payment_method="wallet",
+            reference_id=order_id,
+            details=f"شراء: {name}"
+        )
 
     # Save order in MongoDB
     order_data = {
@@ -1363,6 +1960,42 @@ def handle_admin_add_balance(message: types.Message):
     )
 
 
+@bot.message_handler(commands=["wallet"])
+def handle_admin_check_wallet(message: types.Message):
+    """Admin command /wallet <user_id>: views a user's wallet info and recent history."""
+    if not is_admin(message.from_user.id):
+        return
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "⚠️ <b>طريقة الاستخدام:</b>\n<code>/wallet USER_ID</code>", parse_mode="HTML")
+        return
+    try:
+        target_uid = int(parts[1])
+    except ValueError:
+        bot.reply_to(message, "❌ معرف المستخدم غير صالح.")
+        return
+
+    bal = database.get_user_balance(target_uid)
+    tot_dep = database.get_user_total_deposited(target_uid)
+    tot_spent = database.get_user_total_spent(target_uid)
+    txs = database.get_user_wallet_history(target_uid, limit=5)
+
+    lines = [
+        f"💳 <b>بيانات محفظة المستخدم <code>{target_uid}</code>:</b>\n",
+        f"💰 <b>الرصيد الحالي:</b> <code>${bal:.2f}</code>",
+        f"➕ <b>إجمالي الإيداعات:</b> <code>${tot_dep:.2f}</code>",
+        f"➖ <b>إجمالي المشتريات:</b> <code>${tot_spent:.2f}</code>\n",
+        "📜 <b>آخر الحركات:</b>"
+    ]
+    if not txs:
+        lines.append("<i>لا توجد حركات مسجلة.</i>")
+    else:
+        for t in txs:
+            lines.append(f"• {t.get('type')}: ${t.get('amount')} (الرصيد بعد: ${t.get('balance_after')})")
+
+    bot.reply_to(message, "\n".join(lines), parse_mode="HTML")
+
+
 @bot.message_handler(commands=["admin", "help"])
 def handle_admin_help(message: types.Message):
     """Shows admin help commands if sender is admin, or basic help otherwise."""
@@ -1372,6 +2005,7 @@ def handle_admin_help(message: types.Message):
             "• /sync — مزامنة التغييرات والمخزون من الـ API (المتجر 1)\n"
             "• /api_balance — فحص رصيد حسابات المتاجر الخارجية\n"
             "• /orders — عرض آخر الطلبات المسجلة لكافة المتاجر\n"
+            "• /wallet [ID] — عرض رصيد وسجل حركات مستخدم\n"
             "• /add_balance [ID] [AMOUNT] — شحن رصيد لمستخدم في المتجر\n"
             "• /set_conn [CODE] — تحديث كود الاتصال للمتجر 1\n"
             "• /set_elite_key [KEY] — تحديث مفتاح API لمتجر 2 (Elite)\n"

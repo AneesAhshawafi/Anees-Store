@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 import pymongo
 from config import MONGO_URI, DB_NAME, INITIAL_CONNECTION_CODE, INITIAL_ELITE_API_KEY
@@ -41,6 +42,13 @@ def get_db():
         except Exception as mock_err:
             logger.error(f"Failed to initialize mongomock fallback: {mock_err}")
             raise e
+
+    # Ensure indexes for deposits and transactions
+    try:
+        _db.deposits.create_index([("provider", 1), ("reference_id", 1)], unique=True)
+        _db.wallet_transactions.create_index([("user_id", 1), ("created_at", -1)])
+    except Exception as idx_err:
+        logger.warning(f"Note on index creation: {idx_err}")
 
     # Seed initial connection code and elite key if missing
     _seed_connection_code()
@@ -211,6 +219,163 @@ def upsert_user(user_id: int, username: str = None, first_name: str = None):
         },
         upsert=True
     )
+
+
+# ==========================================
+# Wallet & Transactions Management
+# ==========================================
+
+def record_wallet_transaction(
+    user_id: int,
+    tx_type: str,
+    amount: float,
+    balance_before: float,
+    balance_after: float,
+    payment_method: str = "balance",
+    reference_id: str = None,
+    details: str = None
+) -> str:
+    """Records an audit log entry for any wallet balance change."""
+    db = get_db()
+    now = datetime.now(timezone.utc)
+    tx_id = f"TX_{int(now.timestamp())}_{uuid.uuid4().hex[:6]}"
+    doc = {
+        "tx_id": tx_id,
+        "user_id": int(user_id),
+        "type": tx_type,  # deposit, purchase_store1, purchase_store2, refund, admin_adjustment
+        "amount": round(float(amount), 2),
+        "balance_before": round(float(balance_before), 2),
+        "balance_after": round(float(balance_after), 2),
+        "payment_method": payment_method,
+        "reference_id": str(reference_id) if reference_id else None,
+        "details": details or "",
+        "created_at": now
+    }
+    db.wallet_transactions.insert_one(doc)
+    return tx_id
+
+
+def get_user_wallet_history(user_id: int, limit: int = 10) -> list:
+    """Returns the most recent wallet transactions for a given user."""
+    db = get_db()
+    return list(db.wallet_transactions.find({"user_id": int(user_id)}).sort("created_at", -1).limit(limit))
+
+
+def is_deposit_reference_claimed(provider: str, reference_id: str) -> bool:
+    """Checks if a deposit reference/order ID has already been credited."""
+    db = get_db()
+    ref = str(reference_id).strip()
+    return db.deposits.find_one({"provider": str(provider).lower(), "reference_id": ref}) is not None
+
+
+def claim_deposit_reference(
+    provider: str,
+    reference_id: str,
+    user_id: int,
+    amount: float,
+    currency: str = "USDT",
+    details: dict = None
+) -> bool:
+    """
+    Atomically claims a deposit reference in the deposits collection.
+    Guaranteed unique via database index to prevent duplicate credits.
+    """
+    db = get_db()
+    now = datetime.now(timezone.utc)
+    doc = {
+        "provider": str(provider).lower(),
+        "reference_id": str(reference_id).strip(),
+        "user_id": int(user_id),
+        "amount": round(float(amount), 2),
+        "currency": currency,
+        "claimed_at": now,
+        "details": details or {}
+    }
+    try:
+        db.deposits.insert_one(doc)
+        return True
+    except pymongo.errors.DuplicateKeyError:
+        return False
+    except Exception as e:
+        logger.error(f"Error claiming deposit reference {reference_id}: {e}")
+        return False
+
+
+def create_pending_deposit(
+    user_id: int,
+    provider: str,
+    reference_id: str,
+    amount: float = None,
+    user_note: str = None
+) -> str:
+    """Creates a pending deposit review item for admin manual review."""
+    db = get_db()
+    now = datetime.now(timezone.utc)
+    dep_id = f"DEP_{int(now.timestamp())}_{uuid.uuid4().hex[:4]}"
+    doc = {
+        "deposit_id": dep_id,
+        "user_id": int(user_id),
+        "provider": str(provider).lower(),
+        "reference_id": str(reference_id).strip(),
+        "amount": round(float(amount), 2) if amount else None,
+        "user_note": user_note,
+        "status": "pending",  # pending, approved, rejected
+        "created_at": now,
+        "resolved_at": None,
+        "resolved_by": None
+    }
+    db.pending_deposits.insert_one(doc)
+    return dep_id
+
+
+def get_pending_deposit(deposit_id: str) -> dict:
+    """Retrieves a pending deposit item by its deposit_id."""
+    db = get_db()
+    return db.pending_deposits.find_one({"deposit_id": str(deposit_id)})
+
+
+def resolve_pending_deposit(deposit_id: str, status: str, resolved_by: int = None, final_amount: float = None) -> bool:
+    """Marks a pending deposit as approved or rejected."""
+    db = get_db()
+    update_data = {
+        "status": status,
+        "resolved_at": datetime.now(timezone.utc),
+        "resolved_by": resolved_by
+    }
+    if final_amount is not None:
+        update_data["amount"] = round(float(final_amount), 2)
+
+    res = db.pending_deposits.update_one(
+        {"deposit_id": str(deposit_id), "status": "pending"},
+        {"$set": update_data}
+    )
+    return res.modified_count > 0
+
+
+def get_user_total_deposited(user_id: int) -> float:
+    """Calculates total lifetime deposits for a user."""
+    db = get_db()
+    pipeline = [
+        {"$match": {"user_id": int(user_id), "type": "deposit"}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
+    ]
+    res = list(db.wallet_transactions.aggregate(pipeline))
+    if res and len(res) > 0:
+        return round(float(res[0].get("total", 0.0)), 2)
+    return 0.0
+
+
+def get_user_total_spent(user_id: int) -> float:
+    """Calculates total lifetime spend from wallet for a user."""
+    db = get_db()
+    pipeline = [
+        {"$match": {"user_id": int(user_id), "type": {"$in": ["purchase_store1", "purchase_store2"]}}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
+    ]
+    res = list(db.wallet_transactions.aggregate(pipeline))
+    if res and len(res) > 0:
+        return round(abs(float(res[0].get("total", 0.0))), 2)
+    return 0.0
 
 
 # ==========================================

@@ -27,7 +27,7 @@ INITIAL_CONNECTION_CODE = os.getenv(
 # User balance enforcement toggle:
 # If True, user must have enough balance in bot's MongoDB to purchase.
 # If False, bot sends purchase request directly to API (relying on API balance).
-REQUIRE_USER_BALANCE = os.getenv("REQUIRE_USER_BALANCE", "False").lower() in ("true", "1", "yes")
+REQUIRE_USER_BALANCE = os.getenv("REQUIRE_USER_BALANCE", "True").lower() in ("true", "1", "yes")
 
 # Auto-polling sync interval in seconds (0 to disable)
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "30"))
@@ -38,3 +38,11 @@ PRODUCTS_PER_PAGE = int(os.getenv("PRODUCTS_PER_PAGE", "8"))
 # Store 2 (Elite Tools Store) Config
 INITIAL_ELITE_API_KEY = os.getenv("INITIAL_ELITE_API_KEY", "ETS-496d5002defc54145cbba6cd32569782259a85cef53c0396")
 ELITE_API_BASE_URL = os.getenv("ELITE_API_BASE_URL", "https://api.elitetoolz.store/api")
+
+# Payment Providers / Binance Pay Config
+BINANCE_PAY_ID = os.getenv("BINANCE_PAY_ID", "")
+BINANCE_NICKNAME = os.getenv("BINANCE_NICKNAME", "Anees Store")
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
+MIN_DEPOSIT_USDT = float(os.getenv("MIN_DEPOSIT_USDT", "0.10"))
+

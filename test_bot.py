@@ -153,6 +153,56 @@ class TestAneesStoreBot(unittest.TestCase):
         self.assertEqual(sample_cached["name"], sample["name"])
         print(f"      Elite Store 2 products fetched and cached: {len(prods)} products.")
 
+    def test_08_wallet_transactions_and_anti_replay_deposit(self):
+        """Verify wallet transactions and duplicate deposit prevention."""
+        test_uid = 555444333
+        test_ref = f"REF_TEST_{database.datetime.now().timestamp()}"
+
+        # 1. Claim reference first time -> should succeed
+        c1 = database.claim_deposit_reference("binance_pay", test_ref, test_uid, 15.0, "USDT")
+        self.assertTrue(c1, "First deposit claim must succeed")
+
+        # 2. Claim identical reference second time -> must FAIL (anti-replay)
+        c2 = database.claim_deposit_reference("binance_pay", test_ref, test_uid, 15.0, "USDT")
+        self.assertFalse(c2, "Duplicate deposit claim must fail")
+
+        # 3. Verify is_deposit_reference_claimed
+        self.assertTrue(database.is_deposit_reference_claimed("binance_pay", test_ref))
+
+        # 4. Record wallet transaction
+        tx_id = database.record_wallet_transaction(
+            user_id=test_uid,
+            tx_type="deposit",
+            amount=15.0,
+            balance_before=0.0,
+            balance_after=15.0,
+            payment_method="binance_pay",
+            reference_id=test_ref,
+            details="Test Deposit"
+        )
+        self.assertIsNotNone(tx_id)
+
+        history = database.get_user_wallet_history(test_uid, limit=5)
+        self.assertGreater(len(history), 0)
+        self.assertEqual(history[0]["amount"], 15.0)
+        print(f"\n[OK] test_08: Wallet deposit, anti-replay, and audit transaction verified successfully.")
+
+    def test_09_payment_providers_registry_and_binance_pay(self):
+        """Verify payment providers modular architecture."""
+        import payments
+        active = payments.get_active_providers()
+        self.assertGreater(len(active), 0, "At least one payment provider must be active")
+
+        prov = payments.get_provider("binance_pay")
+        self.assertIsNotNone(prov, "Binance Pay provider must be registered")
+        self.assertEqual(prov.id, "binance_pay")
+
+        instructions = prov.get_deposit_instructions(user_id=12345)
+        self.assertIn("account_id", instructions)
+        self.assertTrue(len(instructions["account_id"]) > 0)
+        self.assertEqual(instructions["currency"], "USDT")
+        print(f"\n[OK] test_09: Payments registry verified. Active providers: {[p.id for p in active]}")
+
 
 if __name__ == "__main__":
     unittest.main()
