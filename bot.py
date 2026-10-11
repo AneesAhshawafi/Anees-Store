@@ -212,16 +212,6 @@ def handle_products_menu(message: types.Message):
         reply_markup=build_products_keyboard(products, page=0),
         parse_mode="HTML"
     )
-        "🤝 <b>تسليم يدوي:</b> يتم تجهيزه وتسليمه لك من قِبل الإدارة.\n\n"
-        "👇 <i>اضغط على أي منتج لعرض تفاصيله والشراء:</i>"
-    )
-    bot.edit_message_text(
-        text,
-        chat_id=message.chat.id,
-        message_id=loading_msg.message_id,
-        reply_markup=build_products_keyboard(products, page=0),
-        parse_mode="HTML"
-    )
 
 
 @bot.message_handler(func=lambda msg: msg.text in ("💰 رصيدي", "/balance"))

@@ -1,0 +1,67 @@
+name: CI/CD Pipeline - Test & Deploy to Railway
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  # ==========================================
+  # 1. مرحلة الفحص والاختبار قبل النشر (Test Job)
+  # ==========================================
+  test:
+    name: Run Automated Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Unit Tests
+        run: |
+          python test_bot.py
+        env:
+          PYTHONUNBUFFERED: "1"
+          INITIAL_CONNECTION_CODE: ${{ secrets.INITIAL_CONNECTION_CODE || 'conn_eyJrIjoic2tfOTEwMTA1Y2I4ZDVkNWFjOTVjNzA4Njg4Y2I2NjhmNmEzMjc2ODVhMDFlYmNiMjA3IiwidSI6Imh0dHBzOi8vaW5zMjExMjEzMS1md2YxLm9ucmVuZGVyLmNvbS84ZjcxYWVkZDM0OTRlMDQyYmIwNjQwOGY1MGI3ZjkzOCJ9' }}
+
+  # ==========================================
+  # 2. مرحلة النشر على Railway (Deploy Job)
+  # يتم تشغيلها فقط في حال نجاح الاختبارات بالكامل
+  # ==========================================
+  deploy:
+    name: Deploy to Railway
+    needs: test
+    runs-on: ubuntu-latest
+    if: success()
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # النشر إما عبر Railway CLI أو عبر Deploy Hook
+      - name: Deploy via Railway CLI (if RAILWAY_TOKEN is set)
+        if: env.RAILWAY_TOKEN != ''
+        run: |
+          npm install -g @railway/cli
+          railway up --detach
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Deploy via Webhook (if RAILWAY_DEPLOY_WEBHOOK_URL is set)
+        if: env.RAILWAY_DEPLOY_WEBHOOK_URL != '' && env.RAILWAY_TOKEN == ''
+        run: |
+          curl -f -X POST "${{ secrets.RAILWAY_DEPLOY_WEBHOOK_URL }}"
+        env:
+          RAILWAY_DEPLOY_WEBHOOK_URL: ${{ secrets.RAILWAY_DEPLOY_WEBHOOK_URL }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
