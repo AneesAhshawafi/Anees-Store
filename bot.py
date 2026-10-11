@@ -179,25 +179,39 @@ def handle_start(message: types.Message):
 
 @bot.message_handler(func=lambda msg: msg.text in ("🛒 المنتجات", "/products"))
 def handle_products_menu(message: types.Message):
-    """Handles '🛒 المنتجات': fetches products from API and presents catalog."""
+    """Handles '🛒 المنتجات': shows catalog instantly from cache."""
     user = message.from_user
     database.upsert_user(user.id, user.username, user.first_name)
 
-    loading_msg = bot.send_message(message.chat.id, "⏳ <i>جارٍ تحميل قائمة المنتجات...</i>", parse_mode="HTML")
-
-    products = api_client.get_products()
+    products = database.get_cached_products()
     if not products:
-        bot.edit_message_text(
-            "⚠️ <b>عذراً، لا توجد منتجات متاحة حالياً.</b> يرجى المحاولة لاحقاً.",
-            chat_id=message.chat.id,
-            message_id=loading_msg.message_id,
-            parse_mode="HTML"
-        )
-        return
+        loading_msg = bot.send_message(message.chat.id, "⏳ <i>جارٍ تجهيز قائمة المنتجات لأول مرة...</i>", parse_mode="HTML")
+        products = api_client.get_products()
+        if not products:
+            bot.edit_message_text(
+                "⚠️ <b>عذراً، لا توجد منتجات متاحة حالياً.</b> يرجى المحاولة لاحقاً.",
+                chat_id=message.chat.id,
+                message_id=loading_msg.message_id,
+                parse_mode="HTML"
+            )
+            return
+        try:
+            bot.delete_message(message.chat.id, loading_msg.message_id)
+        except Exception:
+            pass
 
     text = (
         "📦 <b>قائمة المنتجات والاشتراكات المتاحة:</b>\n\n"
         "⚡ <b>تسليم فوري:</b> تصلك بيانات الكود مباشرة فور الشراء.\n"
+        "🤝 <b>تسليم يدوي:</b> يتم تجهيزه وتسليمه لك من قِبل الإدارة.\n\n"
+        "👇 <i>اضغط على أي منتج لعرض تفاصيله والشراء:</i>"
+    )
+    bot.send_message(
+        message.chat.id,
+        text,
+        reply_markup=build_products_keyboard(products, page=0),
+        parse_mode="HTML"
+    )
         "🤝 <b>تسليم يدوي:</b> يتم تجهيزه وتسليمه لك من قِبل الإدارة.\n\n"
         "👇 <i>اضغط على أي منتج لعرض تفاصيله والشراء:</i>"
     )
@@ -298,9 +312,9 @@ def handle_refresh_products(call: types.CallbackQuery):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("p_"))
 def handle_product_details(call: types.CallbackQuery):
-    """Displays full details of a specific product."""
+    """Displays full details of a specific product instantly from cache."""
     prod_id = call.data.replace("p_", "")
-    product = api_client.get_product(prod_id)
+    product = database.get_cached_product(prod_id) or api_client.get_product(prod_id)
 
     if not product:
         bot.answer_callback_query(call.id, "⚠️ المنتج غير متوفر حالياً.", show_alert=True)
@@ -379,7 +393,7 @@ def handle_buy_button(call: types.CallbackQuery):
     """Initiates purchase confirmation or prompts for email if ChatGPT product."""
     user = call.from_user
     prod_id = call.data.replace("buy_", "")
-    product = api_client.get_product(prod_id)
+    product = database.get_cached_product(prod_id) or api_client.get_product(prod_id)
 
     if not product:
         bot.answer_callback_query(call.id, "⚠️ المنتج غير متوفر.", show_alert=True)
@@ -486,7 +500,7 @@ def process_chatgpt_email(message: types.Message, prod_id: str, price: float, pr
 def handle_confirm_purchase(call: types.CallbackQuery):
     """Executes the purchase after confirmation."""
     prod_id = call.data.replace("confirm_buy_", "")
-    product = api_client.get_product(prod_id)
+    product = database.get_cached_product(prod_id) or api_client.get_product(prod_id)
 
     if not product:
         bot.answer_callback_query(call.id, "⚠️ تعذر جلب بيانات المنتج.", show_alert=True)

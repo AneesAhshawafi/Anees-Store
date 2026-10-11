@@ -285,50 +285,128 @@ def set_sync_cursor(cursor: int):
 
 
 # ==========================================
-# Products Cache Management
+# Products Cache Management (High-Performance In-Memory & Bulk MongoDB)
 # ==========================================
 
+_in_memory_products = []
+_in_memory_products_dict = {}
+
+
 def cache_products(products: list):
-    """Saves or updates products in the local MongoDB products collection."""
+    """Saves or updates products in in-memory cache and bulk writes to MongoDB."""
+    global _in_memory_products, _in_memory_products_dict
+    if not products:
+        return
+
     db = get_db()
+    now = datetime.now(timezone.utc)
+    operations = []
+
+    clean_list = []
+    clean_dict = {}
+
     for prod in products:
         p_id = str(prod.get("id") or prod.get("_id", ""))
         if not p_id:
             continue
-        prod["id"] = p_id
-        prod["cached_at"] = datetime.now(timezone.utc)
-        db.products.update_one(
-            {"id": p_id},
-            {"$set": prod},
-            upsert=True
+        prod_copy = dict(prod)
+        prod_copy["id"] = p_id
+        prod_copy["cached_at"] = now
+        clean_list.append(prod_copy)
+        clean_dict[p_id] = prod_copy
+
+        operations.append(
+            pymongo.UpdateOne(
+                {"id": p_id},
+                {"$set": prod_copy},
+                upsert=True
+            )
         )
+
+    # Update in-memory cache instantly (0ms)
+    _in_memory_products = clean_list
+    _in_memory_products_dict = clean_dict
+
+    # Bulk write to MongoDB in 1 single network call
+    if operations:
+        try:
+            db.products.bulk_write(operations, ordered=False)
+        except Exception as e:
+            logger.error(f"Error bulk updating products: {e}")
 
 
 def get_cached_products() -> list:
-    """Returns all cached products."""
-    db = get_db()
-    return list(db.products.find())
+    """Returns products from in-memory cache instantly (fallback to MongoDB)."""
+    global _in_memory_products, _in_memory_products_dict
+    if _in_memory_products:
+        return _in_memory_products
+
+    try:
+        db = get_db()
+        items = list(db.products.find())
+        if items:
+            _in_memory_products = items
+            _in_memory_products_dict = {str(p.get("id") or p.get("_id")): p for p in items}
+            return _in_memory_products
+    except Exception as e:
+        logger.error(f"Error reading cached products from MongoDB: {e}")
+
+    return []
 
 
 def get_cached_product(product_id: str) -> dict:
-    """Returns a specific product from cache."""
-    db = get_db()
-    return db.products.find_one({"id": str(product_id)})
+    """Returns a specific product instantly from memory or DB."""
+    global _in_memory_products_dict
+    p_id = str(product_id)
+    if p_id in _in_memory_products_dict:
+        return _in_memory_products_dict[p_id]
+
+    try:
+        db = get_db()
+        item = db.products.find_one({"id": p_id})
+        if item:
+            _in_memory_products_dict[p_id] = item
+            return item
+    except Exception as e:
+        logger.error(f"Error reading product {p_id} from MongoDB: {e}")
+
+    return None
 
 
 def update_cached_stock(product_id: str, new_stock):
-    """Updates product remaining stock in cache."""
-    db = get_db()
-    db.products.update_one(
-        {"id": str(product_id)},
-        {"$set": {
-            "stock": new_stock,
-            "stock_updated_at": datetime.now(timezone.utc)
-        }}
-    )
+    """Updates product remaining stock in memory and MongoDB."""
+    global _in_memory_products_dict, _in_memory_products
+    p_id = str(product_id)
+    if p_id in _in_memory_products_dict:
+        _in_memory_products_dict[p_id]["stock"] = new_stock
+
+    for p in _in_memory_products:
+        if str(p.get("id") or p.get("_id")) == p_id:
+            p["stock"] = new_stock
+            break
+
+    try:
+        db = get_db()
+        db.products.update_one(
+            {"id": p_id},
+            {"$set": {
+                "stock": new_stock,
+                "stock_updated_at": datetime.now(timezone.utc)
+            }}
+        )
+    except Exception as e:
+        logger.error(f"Error updating stock for {p_id}: {e}")
 
 
 def remove_cached_product(product_id: str):
-    """Removes a deleted product from cache."""
-    db = get_db()
-    db.products.delete_one({"id": str(product_id)})
+    """Removes a deleted product from memory and MongoDB."""
+    global _in_memory_products_dict, _in_memory_products
+    p_id = str(product_id)
+    _in_memory_products_dict.pop(p_id, None)
+    _in_memory_products = [p for p in _in_memory_products if str(p.get("id") or p.get("_id")) != p_id]
+
+    try:
+        db = get_db()
+        db.products.delete_one({"id": p_id})
+    except Exception as e:
+        logger.error(f"Error removing product {p_id}: {e}")
