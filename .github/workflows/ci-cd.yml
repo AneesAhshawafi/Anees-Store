@@ -44,24 +44,23 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     if: success()
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_DEPLOY_WEBHOOK_URL: ${{ secrets.RAILWAY_DEPLOY_WEBHOOK_URL }}
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # النشر إما عبر Railway CLI أو عبر Deploy Hook
-      - name: Deploy via Railway CLI (if RAILWAY_TOKEN is set)
+      # النشر عبر Railway CLI
+      - name: Deploy via Railway CLI
         if: env.RAILWAY_TOKEN != ''
         run: |
           npm install -g @railway/cli
-          railway up --detach
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          railway up --service worker --detach || railway up --detach
 
-      - name: Deploy via Webhook (if RAILWAY_DEPLOY_WEBHOOK_URL is set)
+      # النشر عبر Webhook (إذا لم يتوفر Token)
+      - name: Deploy via Webhook
         if: env.RAILWAY_DEPLOY_WEBHOOK_URL != '' && env.RAILWAY_TOKEN == ''
         run: |
-          curl -f -X POST "${{ secrets.RAILWAY_DEPLOY_WEBHOOK_URL }}"
-        env:
-          RAILWAY_DEPLOY_WEBHOOK_URL: ${{ secrets.RAILWAY_DEPLOY_WEBHOOK_URL }}
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          curl -f -X POST "${{ env.RAILWAY_DEPLOY_WEBHOOK_URL }}"
