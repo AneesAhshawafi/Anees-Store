@@ -3,7 +3,7 @@ import json
 import logging
 from datetime import datetime, timezone
 import pymongo
-from config import MONGO_URI, DB_NAME, INITIAL_CONNECTION_CODE
+from config import MONGO_URI, DB_NAME, INITIAL_CONNECTION_CODE, INITIAL_ELITE_API_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +42,9 @@ def get_db():
             logger.error(f"Failed to initialize mongomock fallback: {mock_err}")
             raise e
 
-    # Seed initial connection code if missing
+    # Seed initial connection code and elite key if missing
     _seed_connection_code()
+    _seed_elite_key()
     return _db
 
 
@@ -63,6 +64,20 @@ def _seed_connection_code():
             upsert=True
         )
         logger.info("Initial connection_code successfully saved to MongoDB settings.")
+
+
+def _seed_elite_key():
+    """Seeds INITIAL_ELITE_API_KEY if no elite_api_key is found in MongoDB."""
+    if not INITIAL_ELITE_API_KEY:
+        return
+    existing = _db.settings.find_one({"key": "elite_api_key"})
+    if not existing:
+        _db.settings.update_one(
+            {"key": "elite_api_key"},
+            {"$set": {"key": "elite_api_key", "value": INITIAL_ELITE_API_KEY, "updated_at": datetime.now(timezone.utc)}},
+            upsert=True
+        )
+        logger.info("Initial elite_api_key successfully saved to MongoDB settings.")
 
 
 # ==========================================
@@ -410,3 +425,117 @@ def remove_cached_product(product_id: str):
         db.products.delete_one({"id": p_id})
     except Exception as e:
         logger.error(f"Error removing product {p_id}: {e}")
+
+
+# ==========================================
+# Elite Store (Store 2) Credentials & Cache
+# ==========================================
+
+def get_elite_api_key() -> str:
+    """Reads elite_api_key from MongoDB settings."""
+    db = get_db()
+    doc = db.settings.find_one({"key": "elite_api_key"})
+    if doc and doc.get("value"):
+        return doc["value"].strip()
+    return INITIAL_ELITE_API_KEY or ""
+
+
+def set_elite_api_key(new_key: str) -> bool:
+    """Updates elite_api_key in MongoDB settings."""
+    if not new_key or not new_key.strip():
+        return False
+    db = get_db()
+    db.settings.update_one(
+        {"key": "elite_api_key"},
+        {"$set": {
+            "key": "elite_api_key",
+            "value": new_key.strip(),
+            "updated_at": datetime.now(timezone.utc)
+        }},
+        upsert=True
+    )
+    logger.info("Elite API Key updated in MongoDB settings.")
+    return True
+
+
+_in_memory_elite_products = []
+_in_memory_elite_products_dict = {}
+
+
+def cache_elite_products(products: list):
+    """Caches Store 2 (Elite) products in-memory and bulk writes to MongoDB."""
+    global _in_memory_elite_products, _in_memory_elite_products_dict
+    if not products:
+        return
+
+    db = get_db()
+    now = datetime.now(timezone.utc)
+    operations = []
+    clean_list = []
+    clean_dict = {}
+
+    for prod in products:
+        p_id = str(prod.get("id", ""))
+        if not p_id:
+            continue
+        prod_copy = dict(prod)
+        prod_copy["id"] = p_id
+        prod_copy["store"] = "elite"
+        prod_copy["cached_at"] = now
+        clean_list.append(prod_copy)
+        clean_dict[p_id] = prod_copy
+
+        operations.append(
+            pymongo.UpdateOne(
+                {"id": p_id, "store": "elite"},
+                {"$set": prod_copy},
+                upsert=True
+            )
+        )
+
+    _in_memory_elite_products = clean_list
+    _in_memory_elite_products_dict = clean_dict
+
+    if operations:
+        try:
+            db.elite_products.bulk_write(operations, ordered=False)
+        except Exception as e:
+            logger.error(f"Error bulk updating elite products: {e}")
+
+
+def get_cached_elite_products() -> list:
+    """Returns Store 2 (Elite) products from memory instantly (or MongoDB)."""
+    global _in_memory_elite_products, _in_memory_elite_products_dict
+    if _in_memory_elite_products:
+        return _in_memory_elite_products
+
+    try:
+        db = get_db()
+        items = list(db.elite_products.find())
+        if items:
+            _in_memory_elite_products = items
+            _in_memory_elite_products_dict = {str(p.get("id")): p for p in items}
+            return _in_memory_elite_products
+    except Exception as e:
+        logger.error(f"Error reading cached elite products: {e}")
+
+    return []
+
+
+def get_cached_elite_product(product_id: str) -> dict:
+    """Returns a specific Elite product instantly."""
+    global _in_memory_elite_products_dict
+    p_id = str(product_id)
+    if p_id in _in_memory_elite_products_dict:
+        return _in_memory_elite_products_dict[p_id]
+
+    try:
+        db = get_db()
+        item = db.elite_products.find_one({"id": p_id})
+        if item:
+            _in_memory_elite_products_dict[p_id] = item
+            return item
+    except Exception as e:
+        logger.error(f"Error reading elite product {p_id}: {e}")
+
+    return None

@@ -9,6 +9,7 @@ from telebot import types
 import config
 import database
 from api_client import api_client
+from elite_client import elite_client
 import sync_worker
 
 
@@ -92,16 +93,34 @@ def notify_order_completed(order_info: dict):
 # ==========================================
 
 def get_main_keyboard():
-    """Builds the main /start reply keyboard with EXACTLY 2 buttons as requested."""
+    """Builds the main /start reply keyboard with 3 buttons: المتجر 1, المتجر 2, رصيدي."""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    btn_products = types.KeyboardButton("🛒 المنتجات")
+    btn_store1 = types.KeyboardButton("🏪 المتجر 1")
+    btn_store2 = types.KeyboardButton("💎 المتجر 2")
     btn_balance = types.KeyboardButton("💰 رصيدي")
-    markup.add(btn_products, btn_balance)
+    markup.add(btn_store1, btn_store2)
+    markup.add(btn_balance)
+    return markup
+
+
+def get_store1_keyboard():
+    """Sub-menu keyboard for Store 1."""
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
+    markup.add(types.KeyboardButton("🛒 منتجات المتجر 1"))
+    markup.add(types.KeyboardButton("🔙 القائمة الرئيسية"))
+    return markup
+
+
+def get_store2_keyboard():
+    """Sub-menu keyboard for Store 2 (Elite)."""
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
+    markup.add(types.KeyboardButton("🛒 منتجات المتجر 2"))
+    markup.add(types.KeyboardButton("🔙 القائمة الرئيسية"))
     return markup
 
 
 def build_products_keyboard(products: list, page: int = 0):
-    """Builds paginated inline keyboard for products catalog."""
+    """Builds paginated inline keyboard for Store 1 products catalog."""
     markup = types.InlineKeyboardMarkup(row_width=1)
     per_page = config.PRODUCTS_PER_PAGE
     total_pages = max(1, (len(products) + per_page - 1) // per_page)
@@ -155,7 +174,7 @@ def build_products_keyboard(products: list, page: int = 0):
 
 
 def build_product_detail_keyboard(product_id: str, is_in_stock: bool):
-    """Builds inline keyboard for product details."""
+    """Builds inline keyboard for Store 1 product details."""
     markup = types.InlineKeyboardMarkup(row_width=1)
     if is_in_stock:
         markup.add(types.InlineKeyboardButton("🛒 شراء الآن", callback_data=f"buy_{product_id}"))
@@ -165,21 +184,85 @@ def build_product_detail_keyboard(product_id: str, is_in_stock: bool):
     return markup
 
 
+def build_elite_products_keyboard(products: list, page: int = 0):
+    """Builds paginated inline keyboard for Store 2 (Elite) products catalog."""
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    per_page = config.PRODUCTS_PER_PAGE
+    total_pages = max(1, (len(products) + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+
+    start_idx = page * per_page
+    end_idx = start_idx + per_page
+    current_page_products = products[start_idx:end_idx]
+
+    for p in current_page_products:
+        p_id = str(p.get("id", ""))
+        raw_name = p.get("name") or "منتج إيليت"
+        name = clean_html_tags(raw_name)
+
+        price = p.get("price", 0.0)
+        try:
+            price_val = float(price)
+            price_str = f"${price_val:.2f}"
+        except Exception:
+            price_str = f"${price}"
+
+        stock = p.get("stock")
+        if stock is not None and isinstance(stock, (int, float)) and stock <= 0:
+            stock_badge = "❌"
+        else:
+            stock_badge = "⚡"
+
+        if len(name) > 30:
+            name = name[:27] + "..."
+
+        btn_text = f"{stock_badge} {name} | {price_str}"
+        markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"s2_p_{p_id}"))
+
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(types.InlineKeyboardButton("◀️ السابق", callback_data=f"s2_page_{page - 1}"))
+
+    nav_buttons.append(types.InlineKeyboardButton(f"📄 {page + 1}/{total_pages}", callback_data="noop"))
+
+    if page < total_pages - 1:
+        nav_buttons.append(types.InlineKeyboardButton("التالي ▶️", callback_data=f"s2_page_{page + 1}"))
+
+    if nav_buttons:
+        markup.row(*nav_buttons)
+
+    markup.row(types.InlineKeyboardButton("🔄 تحديث القائمة", callback_data="s2_refresh_products"))
+    return markup
+
+
+def build_elite_product_detail_keyboard(product_id: str, is_in_stock: bool):
+    """Builds inline keyboard for Store 2 (Elite) product details."""
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    if is_in_stock:
+        markup.add(types.InlineKeyboardButton("🛒 شراء الآن", callback_data=f"s2_buy_{product_id}"))
+    else:
+        markup.add(types.InlineKeyboardButton("❌ نفد من المخزون", callback_data="noop"))
+    markup.add(types.InlineKeyboardButton("🔙 العودة لمنتجات المتجر 2", callback_data="s2_back_products"))
+    return markup
+
+
 # ==========================================
 # Handlers: /start & Main Menu
 # ==========================================
 
 @bot.message_handler(commands=["start"])
 def handle_start(message: types.Message):
-    """Handles /start command: updates user in DB and shows main 2 buttons."""
+    """Handles /start command: updates user in DB and shows main 3 buttons."""
     user = message.from_user
     database.upsert_user(user.id, user.username, user.first_name)
 
     welcome_text = (
-        f"👋 <b>أهلاً بك يا {html.escape(user.first_name or 'عزيزي')} في متجر أنيس!</b>\n\n"
+        f"👋 <b>أهلاً بك يا {html.escape(user.first_name or 'عزيزي')} في المتجر الرقمي!</b>\n\n"
         "🛍️ يمكنك استعراض كافة المنتجات الرقمية والاشتراكات والشراء بكل سهولة وأمان.\n\n"
-        "⚡ <b>تسليم فوري للأكواد</b> أو 🤝 <b>تسليم يدوي موثوق</b>.\n\n"
-        "اختر ما يناسبك من القائمة أدناه للبدء:"
+        "اختر المتجر المطلوب أو استعرض رصيدك أدناه:\n"
+        "• 🏪 <b>المتجر 1:</b> اشتراكات رقمية وخدمات متنوعة.\n"
+        "• 💎 <b>المتجر 2:</b> أدوات وحسابات النخبة (Elite Tools Store).\n"
+        "• 💰 <b>رصيدي:</b> لمعرفة رصيدك المسجل وطلباتك."
     )
     bot.send_message(
         message.chat.id,
@@ -189,9 +272,40 @@ def handle_start(message: types.Message):
     )
 
 
-@bot.message_handler(func=lambda msg: msg.text in ("🛒 المنتجات", "/products"))
+@bot.message_handler(func=lambda msg: msg.text in ("🏪 المتجر 1", "/store1"))
+def handle_store1_menu(message: types.Message):
+    """Handles '🏪 المتجر 1': displays Store 1 menu."""
+    text = (
+        "🏪 <b>المتجر 1 (الرئيسي):</b>\n\n"
+        "يقدم تشكيلة واسعة من الاشتراكات والخدمات الرقمية المتنوعة.\n"
+        "⚡ <b>تسليم فوري للأكواد</b> أو 🤝 <b>تسليم يدوي موثوق</b>.\n\n"
+        "👇 اضغط على <b>🛒 منتجات المتجر 1</b> أدناه لعرض الكتالوج والشراء:"
+    )
+    bot.send_message(message.chat.id, text, reply_markup=get_store1_keyboard(), parse_mode="HTML")
+
+
+@bot.message_handler(func=lambda msg: msg.text in ("💎 المتجر 2", "/store2"))
+def handle_store2_menu(message: types.Message):
+    """Handles '💎 المتجر 2': displays Store 2 (Elite) menu."""
+    text = (
+        "💎 <b>المتجر 2 (Elite Tools Store):</b>\n\n"
+        "متجر متخصص في حسابات وأدوات المطورين والذكاء الاصطناعي والتصميم.\n"
+        "⚡ <b>تسليم فوري لبيانات وحسابات الدخول الجاهزة</b>.\n\n"
+        "👇 اضغط على <b>🛒 منتجات المتجر 2</b> أدناه لعرض الكتالوج والشراء:"
+    )
+    bot.send_message(message.chat.id, text, reply_markup=get_store2_keyboard(), parse_mode="HTML")
+
+
+@bot.message_handler(func=lambda msg: msg.text == "🔙 القائمة الرئيسية")
+def handle_back_to_main(message: types.Message):
+    """Returns to the 3-button main menu."""
+    text = "🏠 <b>القائمة الرئيسية:</b>\nاختر المتجر المطلوب أو استعرض رصيدك:"
+    bot.send_message(message.chat.id, text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+
+
+@bot.message_handler(func=lambda msg: msg.text in ("🛒 منتجات المتجر 1", "🛒 المنتجات", "/products"))
 def handle_products_menu(message: types.Message):
-    """Handles '🛒 المنتجات': shows catalog instantly from cache."""
+    """Handles Store 1 products catalog: shows catalog instantly from cache."""
     user = message.from_user
     database.upsert_user(user.id, user.username, user.first_name)
 
@@ -213,7 +327,7 @@ def handle_products_menu(message: types.Message):
             pass
 
     text = (
-        "📦 <b>قائمة المنتجات والاشتراكات المتاحة:</b>\n\n"
+        "🏪 <b>قائمة منتجات المتجر 1:</b>\n\n"
         "⚡ <b>تسليم فوري:</b> تصلك بيانات الكود مباشرة فور الشراء.\n"
         "🤝 <b>تسليم يدوي:</b> يتم تجهيزه وتسليمه لك من قِبل الإدارة.\n\n"
         "👇 <i>اضغط على أي منتج لعرض تفاصيله والشراء:</i>"
@@ -222,6 +336,42 @@ def handle_products_menu(message: types.Message):
         message.chat.id,
         text,
         reply_markup=build_products_keyboard(products, page=0),
+        parse_mode="HTML"
+    )
+
+
+@bot.message_handler(func=lambda msg: msg.text in ("🛒 منتجات المتجر 2", "/elite_products"))
+def handle_elite_products_menu(message: types.Message):
+    """Handles Store 2 (Elite) products catalog: shows catalog instantly from cache."""
+    user = message.from_user
+    database.upsert_user(user.id, user.username, user.first_name)
+
+    products = database.get_cached_elite_products()
+    if not products:
+        loading_msg = bot.send_message(message.chat.id, "⏳ <i>جارٍ تجهيز قائمة منتجات متجر Elite...</i>", parse_mode="HTML")
+        products = elite_client.get_products()
+        if not products:
+            bot.edit_message_text(
+                "⚠️ <b>عذراً، لا توجد منتجات متاحة حالياً في متجر Elite.</b> يرجى المحاولة لاحقاً.",
+                chat_id=message.chat.id,
+                message_id=loading_msg.message_id,
+                parse_mode="HTML"
+            )
+            return
+        try:
+            bot.delete_message(message.chat.id, loading_msg.message_id)
+        except Exception:
+            pass
+
+    text = (
+        "💎 <b>قائمة منتجات المتجر 2 (Elite Tools):</b>\n\n"
+        "⚡ <b>جميع المنتجات تسليم فوري لحسابات وبيانات جاهزة!</b>\n\n"
+        "👇 <i>اضغط على أي منتج لعرض تفاصيله والشراء:</i>"
+    )
+    bot.send_message(
+        message.chat.id,
+        text,
+        reply_markup=build_elite_products_keyboard(products, page=0),
         parse_mode="HTML"
     )
 
@@ -244,14 +394,19 @@ def handle_balance_menu(message: types.Message):
         "💬 <i>للشحن أو لأي استفسار، تواصل مع الدعم الفني والإدارة.</i>"
     )
 
-    # If admin, append store API balance
+    # If admin, append store API balances
     if is_admin(user.id):
         api_bal_info = api_client.get_balance()
         api_bal = api_bal_info.get("balance", "N/A")
+
+        elite_bal_info = elite_client.get_balance()
+        elite_bal = elite_bal_info.get("balance", "N/A")
+
         text += (
             f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
             f"🛠️ <b>بيانات الإدارة (لوحة الأدمن):</b>\n"
-            f"🏬 <b>رصيد حساب الـ API:</b> <code>${api_bal}</code>\n"
+            f"🏬 <b>رصيد المتجر 1 (الرئيسي):</b> <code>${api_bal}</code>\n"
+            f"💎 <b>رصيد المتجر 2 (Elite):</b> <code>${elite_bal}</code>\n"
             f"💡 للمزامنة استخدم الأمر: /sync"
         )
 
@@ -402,6 +557,152 @@ def handle_product_details(call: types.CallbackQuery):
     )
 
     markup = build_product_detail_keyboard(prod_id, is_in_stock)
+
+    try:
+        bot.edit_message_text(
+            details_text,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup,
+            parse_mode="HTML"
+        )
+    except Exception:
+        bot.send_message(
+            call.message.chat.id,
+            details_text,
+            reply_markup=markup,
+            parse_mode="HTML"
+        )
+    bot.answer_callback_query(call.id)
+
+
+# ==========================================
+# Callback Handlers: Store 2 (Elite) Navigation & Details
+# ==========================================
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("s2_page_"))
+def handle_elite_catalog_page(call: types.CallbackQuery):
+    """Handles pagination for Store 2 (Elite) products catalog."""
+    page_num = int(call.data.replace("s2_page_", ""))
+    products = database.get_cached_elite_products()
+    if not products:
+        products = elite_client.get_products()
+
+    markup = build_elite_products_keyboard(products, page=page_num)
+    try:
+        bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    except Exception:
+        pass
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "s2_back_products")
+def handle_elite_back_products(call: types.CallbackQuery):
+    """Returns to Store 2 catalog instantly from cache without network latency."""
+    bot.answer_callback_query(call.id)
+    products = database.get_cached_elite_products()
+    if not products:
+        products = elite_client.get_products()
+
+    text = (
+        "💎 <b>قائمة منتجات المتجر 2 (Elite Tools):</b>\n\n"
+        "⚡ <b>جميع المنتجات تسليم فوري لحسابات وبيانات جاهزة!</b>\n\n"
+        "👇 <i>اضغط على أي منتج لعرض تفاصيله والشراء:</i>"
+    )
+    try:
+        bot.edit_message_text(
+            text,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=build_elite_products_keyboard(products, page=0),
+            parse_mode="HTML"
+        )
+    except Exception:
+        bot.send_message(
+            call.message.chat.id,
+            text,
+            reply_markup=build_elite_products_keyboard(products, page=0),
+            parse_mode="HTML"
+        )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "s2_refresh_products")
+def handle_elite_refresh_products(call: types.CallbackQuery):
+    """Refreshes Store 2 products from Elite API."""
+    bot.answer_callback_query(call.id, text="🔄 جارٍ تحديث منتجات المتجر 2...")
+    products = elite_client.get_products()
+    if not products:
+        products = database.get_cached_elite_products()
+
+    text = (
+        "💎 <b>قائمة منتجات المتجر 2 (Elite Tools):</b>\n\n"
+        "⚡ <b>جميع المنتجات تسليم فوري لحسابات وبيانات جاهزة!</b>\n\n"
+        "👇 <i>اضغط على أي منتج لعرض تفاصيله والشراء:</i>"
+    )
+    try:
+        bot.edit_message_text(
+            text,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=build_elite_products_keyboard(products, page=0),
+            parse_mode="HTML"
+        )
+    except Exception:
+        bot.send_message(
+            call.message.chat.id,
+            text,
+            reply_markup=build_elite_products_keyboard(products, page=0),
+            parse_mode="HTML"
+        )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("s2_p_"))
+def handle_elite_product_details(call: types.CallbackQuery):
+    """Displays full details of a specific Store 2 product instantly."""
+    prod_id = call.data.replace("s2_p_", "")
+    product = database.get_cached_elite_product(prod_id) or elite_client.get_product(prod_id)
+
+    if not product:
+        bot.answer_callback_query(call.id, "⚠️ المنتج غير متوفر حالياً.", show_alert=True)
+        return
+
+    raw_name = product.get("name") or "منتج إيليت"
+    name = clean_html_tags(raw_name)
+    raw_desc = product.get("description") or "تسليم فوري لبيانات وحسابات الاستخدام الجاهزة."
+    desc = clean_html_tags(raw_desc)
+
+    price = product.get("price", 0.0)
+    try:
+        price_val = float(price)
+        price_str = f"${price_val:.2f}"
+    except Exception:
+        price_str = f"${price}"
+
+    stock = product.get("stock")
+    is_in_stock = True
+    if stock is not None and isinstance(stock, (int, float)):
+        if stock <= 0:
+            stock_str = "نفد من المخزون ❌"
+            is_in_stock = False
+        else:
+            stock_str = f"{int(stock)} متوفر"
+    else:
+        stock_str = "متوفر ⚡"
+
+    warranty = product.get("warranty")
+    warranty_text = f"\n🛡️ <b>الضمان:</b> {html.escape(str(warranty))}" if warranty else ""
+
+    details_text = (
+        f"💎 <b>{html.escape(name)}</b>\n\n"
+        f"📝 <b>الوصف:</b>\n"
+        f"<blockquote>{html.escape(desc)}</blockquote>\n\n"
+        f"💵 <b>السعر:</b> <code>{price_str}</code>\n"
+        f"📊 <b>المخزون:</b> <b>{stock_str}</b>\n"
+        f"⚡ <b>نوع التسليم:</b> فوري لبيانات الدخول والحساب"
+        f"{warranty_text}"
+    )
+
+    markup = build_elite_product_detail_keyboard(prod_id, is_in_stock)
 
     try:
         bot.edit_message_text(
@@ -702,6 +1003,203 @@ def _send_or_edit(chat_id: int, text: str, message_id: int = None):
 
 
 # ==========================================
+# Handlers: Store 2 (Elite) Purchase Flow
+# ==========================================
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("s2_buy_"))
+def handle_elite_buy_button(call: types.CallbackQuery):
+    """Initiates purchase confirmation for Store 2 product."""
+    user = call.from_user
+    prod_id = call.data.replace("s2_buy_", "")
+    product = database.get_cached_elite_product(prod_id) or elite_client.get_product(prod_id)
+
+    if not product:
+        bot.answer_callback_query(call.id, "⚠️ المنتج غير متوفر.", show_alert=True)
+        return
+
+    stock = product.get("stock")
+    if stock is not None and isinstance(stock, (int, float)) and stock <= 0:
+        bot.answer_callback_query(call.id, "⚠️ عذراً، نفد المخزون من هذا المنتج!", show_alert=True)
+        return
+
+    price = product.get("price", 0.0)
+    try:
+        price_val = float(price)
+    except Exception:
+        price_val = 0.0
+
+    if config.REQUIRE_USER_BALANCE:
+        user_bal = database.get_user_balance(user.id)
+        if user_bal < price_val:
+            insufficient_text = (
+                f"⚠️ <b>رصيدك غير كافٍ لإتمام عملية الشراء!</b>\n\n"
+                f"💰 <b>رصيدك الحالي:</b> <code>${user_bal:.2f}</code>\n"
+                f"💵 <b>سعر المنتج:</b> <code>${price_val:.2f}</code>\n\n"
+                f"يرجى شحن رصيدك عبر التواصل مع إدارة المتجر للمتابعة."
+            )
+            bot.send_message(call.message.chat.id, insufficient_text, parse_mode="HTML")
+            bot.answer_callback_query(call.id)
+            return
+
+    raw_name = product.get("name") or "منتج إيليت"
+    name = clean_html_tags(raw_name)
+
+    confirm_text = (
+        f"🧾 <b>تأكيد عملية الشراء (المتجر 2):</b>\n\n"
+        f"💎 <b>المنتج:</b> <b>{html.escape(name)}</b>\n"
+        f"💵 <b>المبلغ الإجمالي:</b> <code>${price_val:.2f}</code>\n"
+        f"⚡ <b>نوع التسليم:</b> فوري لبيانات وحساب جاهز\n\n"
+        f"هل أنت متأكد من رغبتك في إتمام الشراء الآن؟"
+    )
+
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("✅ تأكيد الشراء", callback_data=f"s2_confirm_buy_{prod_id}"),
+        types.InlineKeyboardButton("❌ إلغاء", callback_data=f"s2_p_{prod_id}")
+    )
+
+    try:
+        bot.edit_message_text(
+            confirm_text,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup,
+            parse_mode="HTML"
+        )
+    except Exception:
+        bot.send_message(call.message.chat.id, confirm_text, reply_markup=markup, parse_mode="HTML")
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("s2_confirm_buy_"))
+def handle_elite_confirm_purchase(call: types.CallbackQuery):
+    """Executes Store 2 purchase after confirmation."""
+    prod_id = call.data.replace("s2_confirm_buy_", "")
+    product = database.get_cached_elite_product(prod_id) or elite_client.get_product(prod_id)
+
+    if not product:
+        bot.answer_callback_query(call.id, "⚠️ تعذر جلب بيانات المنتج.", show_alert=True)
+        return
+
+    price = product.get("price", 0.0)
+    try:
+        price_val = float(price)
+    except Exception:
+        price_val = 0.0
+
+    bot.answer_callback_query(call.id)
+    try:
+        bot.edit_message_text(
+            "⏳ <b>جارٍ معالجة طلبك مع متجر النخبة (Elite)... يُرجى الانتظار لحظات.</b>",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+    execute_elite_purchase(
+        chat_id=call.message.chat.id,
+        user=call.from_user,
+        product=product,
+        prod_id=prod_id,
+        price=price_val,
+        message_id_to_edit=call.message.message_id
+    )
+
+
+def execute_elite_purchase(chat_id: int, user: types.User, product: dict, prod_id: str, price: float, message_id_to_edit: int = None):
+    """Core purchase logic for Store 2 (Elite Tools API)."""
+    buyer_info = f"@{user.username}" if user.username else f"ID: {user.id} ({user.first_name})"
+    raw_name = product.get("name") or "منتج إيليت"
+    name = clean_html_tags(raw_name)
+
+    # 1. Deduct user balance in MongoDB if required
+    balance_deducted = False
+    if config.REQUIRE_USER_BALANCE:
+        user_bal = database.get_user_balance(user.id)
+        if user_bal < price:
+            fail_text = "⚠️ <b>رصيدك غير كافٍ لإتمام العملية!</b>"
+            _send_or_edit(chat_id, fail_text, message_id_to_edit)
+            return
+        database.add_user_balance(user.id, -price)
+        balance_deducted = True
+
+    # 2. Call Elite API POST /order
+    resp = elite_client.purchase(product_id=prod_id, quantity=1)
+
+    if not resp.get("ok"):
+        # Refund user balance if deducted
+        if balance_deducted:
+            database.add_user_balance(user.id, price)
+
+        error_raw = resp.get("error", "Unknown error")
+        if "balance" in str(error_raw).lower() or resp.get("http_status") == 402:
+            error_ar = "⚠️ <b>تعذر إتمام الشراء:</b> رصيد حساب المتجر غير كافٍ لدى المزود حالياً. تم إشعار الإدارة."
+        elif "stock" in str(error_raw).lower() or resp.get("http_status") == 409:
+            error_ar = "⚠️ <b>عذراً:</b> لقد نفد المخزون من هذا المنتج للتو!"
+        else:
+            error_ar = f"❌ <b>تعذر إتمام الطلب:</b> {html.escape(str(error_raw))}"
+
+        _send_or_edit(chat_id, error_ar, message_id_to_edit)
+        return
+
+    # Purchase succeeded!
+    order_id = resp.get("orderId", f"ELITE_{prod_id[:8]}")
+    charged = resp.get("charged", price)
+    try:
+        charged_val = float(charged)
+    except Exception:
+        charged_val = price
+    items = resp.get("items", [])
+
+    # Save order in MongoDB
+    order_data = {
+        "order_id": order_id,
+        "store": "elite",
+        "user_id": user.id,
+        "buyer_info": buyer_info,
+        "product_id": prod_id,
+        "product_name": name,
+        "price": charged_val,
+        "status": "completed",
+        "is_manual": False,
+        "codes": items,
+        "raw_response": resp
+    }
+    database.save_order(order_data)
+
+    # Format delivered items inside code blocks
+    items_formatted = "\n\n".join([f"<code>{html.escape(str(item))}</code>" for item in items]) if items else "تم تسليم الطلب بنجاح."
+
+    user_success_text = (
+        "🎉 <b>تم الشراء بنجاح من المتجر 2!</b>\n\n"
+        f"💎 <b>المنتج:</b> <b>{html.escape(name)}</b>\n"
+        f"💵 <b>السعر:</b> <code>${charged_val:.2f}</code>\n"
+        f"🆔 <b>رقم الطلب:</b> <code>{order_id}</code>\n\n"
+        f"🔑 <b>بيانات الحساب / الاستلام:</b>\n"
+        f"{items_formatted}\n\n"
+        "شكراً لتسوقك معنا! نتشرف بخدمتك دائماً ❤️"
+    )
+    _send_or_edit(chat_id, user_success_text, message_id_to_edit)
+
+    # Notify Admin
+    admin_notif_text = (
+        f"🔔 <b>طلب جديد في المتجر 2 (Elite)!</b>\n\n"
+        f"🆔 <b>رقم الطلب:</b> <code>{order_id}</code>\n"
+        f"👤 <b>العميل:</b> {html.escape(user.first_name or '')} ({buyer_info})\n"
+        f"🆔 <b>معرف العميل (ID):</b> <code>{user.id}</code>\n"
+        f"💎 <b>المنتج:</b> <b>{html.escape(name)}</b> (ID: <code>{prod_id}</code>)\n"
+        f"💵 <b>السعر:</b> <code>${charged_val:.2f}</code>\n"
+        f"⚡ <b>نوع التسليم:</b> فوري\n"
+    )
+    if items:
+        admin_notif_text += f"\n🔑 <b>البيانات المسلّمة:</b>\n" + "\n".join([f"<code>{html.escape(str(i))}</code>" for i in items])
+
+    notify_admin(admin_notif_text)
+
+
+# ==========================================
 # Admin Commands (/sync, /orders, /set_conn, etc.)
 # ==========================================
 
@@ -747,15 +1245,21 @@ def handle_admin_sync(message: types.Message):
 
 @bot.message_handler(commands=["api_balance"])
 def handle_admin_api_balance(message: types.Message):
-    """Admin command to check store API balance."""
+    """Admin command to check store API balance for both Store 1 and Store 2."""
     if not is_admin(message.from_user.id):
         return
-    res = api_client.get_balance()
-    if res.get("success"):
-        bal = res.get("balance", 0.0)
-        bot.reply_to(message, f"🏬 <b>رصيدك في API المتجر:</b> <code>${bal:.2f}</code>", parse_mode="HTML")
-    else:
-        bot.reply_to(message, f"❌ خطأ: {res.get('error')}")
+    res1 = api_client.get_balance()
+    bal1 = f"${res1.get('balance', 0.0):.2f}" if res1.get("success") else f"❌ {res1.get('error')}"
+
+    res2 = elite_client.get_balance()
+    bal2 = f"${res2.get('balance', 0.0):.2f}" if res2.get("ok") else f"❌ {res2.get('error')}"
+
+    text = (
+        "💳 <b>أرصدة المتاجر الخارجية (لوحة الأدمن):</b>\n\n"
+        f"🏬 <b>المتجر 1 (الرئيسي):</b> <code>{bal1}</code>\n"
+        f"💎 <b>المتجر 2 (Elite Tools):</b> <code>{bal2}</code>"
+    )
+    bot.reply_to(message, text, parse_mode="HTML")
 
 
 @bot.message_handler(commands=["orders"])
@@ -772,12 +1276,14 @@ def handle_admin_orders(message: types.Message):
     lines = ["📋 <b>آخر الطلبات المسجلة في المتجر:</b>\n"]
     for o in orders:
         oid = o.get("order_id", "N/A")
+        store = o.get("store", "store1")
+        store_icon = "💎" if store == "elite" else "🏬"
         name = o.get("product_name", "منتج")
         price = o.get("price", 0)
         status = o.get("status", "N/A")
         buyer = o.get("buyer_info", "مشتري")
         status_icon = "✅" if status == "completed" else "⏳"
-        lines.append(f"{status_icon} <code>{oid}</code> | {html.escape(name)} | ${price} | {buyer}")
+        lines.append(f"{status_icon} {store_icon} <code>{oid}</code> | {html.escape(name)} | ${price} | {buyer}")
 
     bot.reply_to(message, "\n".join(lines), parse_mode="HTML")
 
@@ -803,6 +1309,28 @@ def handle_admin_set_conn(message: types.Message):
         bot.reply_to(message, "✅ <b>تم حفظ وتحديث كود الاتصال في MongoDB بنجاح!</b>", parse_mode="HTML")
     else:
         bot.reply_to(message, "❌ <b>كود الاتصال غير صالح!</b> تأكد من صحة التشفير Base64 والمفاتيح.", parse_mode="HTML")
+
+
+@bot.message_handler(commands=["set_elite_key"])
+def handle_admin_set_elite_key(message: types.Message):
+    """Admin command /set_elite_key <key>: updates Store 2 API key in MongoDB."""
+    if not is_admin(message.from_user.id):
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(
+            message,
+            "⚠️ <b>طريقة الاستخدام:</b>\n<code>/set_elite_key ETS-xxxxxxxxxxxx</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    new_key = parts[1].strip()
+    if database.set_elite_api_key(new_key):
+        bot.reply_to(message, "✅ <b>تم حفظ وتحديث مفتاح API لمتجر Elite بنجاح!</b>", parse_mode="HTML")
+    else:
+        bot.reply_to(message, "❌ المفتاح غير صالح.")
 
 
 @bot.message_handler(commands=["add_balance"])
@@ -841,18 +1369,20 @@ def handle_admin_help(message: types.Message):
     if is_admin(message.from_user.id):
         text = (
             "🛠️ <b>لوحة تحكم إدارة البوت:</b>\n\n"
-            "• /sync — مزامنة التغييرات والمخزون من الـ API\n"
-            "• /api_balance — فحص رصيد حساب الـ API الخارجي\n"
-            "• /orders — عرض آخر الطلبات المسجلة\n"
+            "• /sync — مزامنة التغييرات والمخزون من الـ API (المتجر 1)\n"
+            "• /api_balance — فحص رصيد حسابات المتاجر الخارجية\n"
+            "• /orders — عرض آخر الطلبات المسجلة لكافة المتاجر\n"
             "• /add_balance [ID] [AMOUNT] — شحن رصيد لمستخدم في المتجر\n"
-            "• /set_conn [CODE] — تحديث كود الاتصال في MongoDB\n"
+            "• /set_conn [CODE] — تحديث كود الاتصال للمتجر 1\n"
+            "• /set_elite_key [KEY] — تحديث مفتاح API لمتجر 2 (Elite)\n"
             "• /start — القائمة الرئيسية للعملاء\n"
         )
     else:
         text = (
             "👋 <b>مرحباً بك في المتجر!</b>\n\n"
-            "استخدم الأزرار أدناه للتنقل:\n"
-            "• 🛒 <b>المنتجات:</b> لاستعراض الباقات والاشتراكات المتاحة.\n"
+            "استخدم الأزرار للتنقل:\n"
+            "• 🏪 <b>المتجر 1:</b> اشتراكات رقمية وخدمات متنوعة.\n"
+            "• 💎 <b>المتجر 2:</b> أدوات وحسابات النخبة (Elite Tools).\n"
             "• 💰 <b>رصيدي:</b> لمعرفة رصيدك المسجل وطلباتك."
         )
     bot.send_message(message.chat.id, text, reply_markup=get_main_keyboard(), parse_mode="HTML")
@@ -863,9 +1393,24 @@ def handle_admin_help(message: types.Message):
 # ==========================================
 
 def start_bot():
-    """Initializes database, starts background sync worker and runs Telegram bot polling."""
+    """Initializes database, pre-warms cache, starts background sync worker and runs Telegram bot polling."""
     logger.info("Initializing Database...")
     db = database.get_db()
+
+    # Pre-warm catalog caches for instant button responses
+    try:
+        logger.info("Pre-warming Store 1 products cache...")
+        if not database.get_cached_products():
+            api_client.get_products()
+    except Exception as e:
+        logger.warning(f"Could not pre-warm Store 1 cache: {e}")
+
+    try:
+        logger.info("Pre-warming Store 2 products cache...")
+        if not database.get_cached_elite_products():
+            elite_client.get_products()
+    except Exception as e:
+        logger.warning(f"Could not pre-warm Store 2 cache: {e}")
 
     # Start background polling worker if enabled
     if config.POLL_INTERVAL_SECONDS > 0:

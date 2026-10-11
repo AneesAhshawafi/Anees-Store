@@ -34,3 +34,7 @@ POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "30"))
 
 # Items per page in products catalog
 PRODUCTS_PER_PAGE = int(os.getenv("PRODUCTS_PER_PAGE", "8"))
+
+# Store 2 (Elite Tools Store) Config
+INITIAL_ELITE_API_KEY = os.getenv("INITIAL_ELITE_API_KEY", "ETS-496d5002defc54145cbba6cd32569782259a85cef53c0396")
+ELITE_API_BASE_URL = os.getenv("ELITE_API_BASE_URL", "https://api.elitetoolz.store/api")

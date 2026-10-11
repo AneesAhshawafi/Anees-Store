@@ -34,6 +34,7 @@ jobs:
         env:
           PYTHONUNBUFFERED: "1"
           INITIAL_CONNECTION_CODE: ${{ secrets.INITIAL_CONNECTION_CODE || 'conn_eyJrIjoic2tfOTEwMTA1Y2I4ZDVkNWFjOTVjNzA4Njg4Y2I2NjhmNmEzMjc2ODVhMDFlYmNiMjA3IiwidSI6Imh0dHBzOi8vaW5zMjExMjEzMS1md2YxLm9ucmVuZGVyLmNvbS84ZjcxYWVkZDM0OTRlMDQyYmIwNjQwOGY1MGI3ZjkzOCJ9' }}
+          INITIAL_ELITE_API_KEY: ${{ secrets.INITIAL_ELITE_API_KEY || 'ETS-496d5002defc54145cbba6cd32569782259a85cef53c0396' }}
 
   # ==========================================
   # 2. مرحلة النشر على Railway (Deploy Job)
