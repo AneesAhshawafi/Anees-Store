@@ -283,11 +283,44 @@ def handle_catalog_page(call: types.CallbackQuery):
     bot.answer_callback_query(call.id)
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "refresh_products" or call.data == "back_products")
+@bot.callback_query_handler(func=lambda call: call.data == "back_products")
+def handle_back_products(call: types.CallbackQuery):
+    """Returns to catalog instantly from cache without network latency."""
+    bot.answer_callback_query(call.id)
+    products = database.get_cached_products()
+    if not products:
+        products = api_client.get_products()
+
+    text = (
+        "📦 <b>قائمة المنتجات والاشتراكات المتاحة:</b>\n\n"
+        "⚡ <b>تسليم فوري:</b> تصلك بيانات الكود مباشرة فور الشراء.\n"
+        "🤝 <b>تسليم يدوي:</b> يتم تجهيزه وتسليمه لك من قِبل الإدارة.\n\n"
+        "👇 <i>اضغط على أي منتج لعرض تفاصيله والشراء:</i>"
+    )
+    try:
+        bot.edit_message_text(
+            text,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=build_products_keyboard(products, page=0),
+            parse_mode="HTML"
+        )
+    except Exception:
+        bot.send_message(
+            call.message.chat.id,
+            text,
+            reply_markup=build_products_keyboard(products, page=0),
+            parse_mode="HTML"
+        )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "refresh_products")
 def handle_refresh_products(call: types.CallbackQuery):
-    """Refreshes product list and returns to catalog."""
+    """Refreshes product list from API."""
     bot.answer_callback_query(call.id, text="🔄 جارٍ تحديث المنتجات...")
     products = api_client.get_products()
+    if not products:
+        products = database.get_cached_products()
 
     text = (
         "📦 <b>قائمة المنتجات والاشتراكات المتاحة:</b>\n\n"
