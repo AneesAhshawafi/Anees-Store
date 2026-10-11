@@ -657,6 +657,39 @@ def process_deposit_proof(message: types.Message, provider_id: str):
             user_note=error_msg
         )
 
+        if result.get("is_geo_restricted"):
+            # Automatically forward to admin review right away
+            buyer_info = f"@{user.username}" if user.username else f"ID: {user.id} ({user.first_name})"
+            admin_markup = types.InlineKeyboardMarkup(row_width=2)
+            admin_markup.add(
+                types.InlineKeyboardButton("✅ موافقة وشحن", callback_data=f"adm_app_{pending_id}"),
+                types.InlineKeyboardButton("❌ رفض", callback_data=f"adm_rej_{pending_id}")
+            )
+            admin_text = (
+                "📩 <b>طلب شحن رصيد جديد (يحتاج تأكيد الإدارة):</b>\n\n"
+                f"🆔 <b>معرف الطلب:</b> <code>{pending_id}</code>\n"
+                f"👤 <b>العميل:</b> {html.escape(user.first_name or '')} ({buyer_info})\n"
+                f"🆔 <b>معرف العميل (ID):</b> <code>{user.id}</code>\n"
+                f"💳 <b>وسيلة الدفع:</b> {provider.display_name}\n"
+                f"🔢 <b>رقم العملية المقدم:</b> <code>{proof_text}</code>\n\n"
+                "💡 <i>تحقق من إشعار تطبيق بينانس، ثم اضغط على موافقة لشحن الرصيد للعميل أو رفض.</i>"
+            )
+            notify_admin_with_markup(admin_text, admin_markup)
+
+            auto_forward_text = (
+                "⏳ <b>تم استلام رقم المعاملة بنجاح، وجارٍ التأكيد مع الإدارة!</b>\n\n"
+                f"🔢 <b>رقم المعاملة:</b> <code>{proof_text}</code>\n"
+                f"🆔 <b>معرف المتابعة:</b> <code>{pending_id}</code>\n\n"
+                "📌 <i>تم إرسال إشعار فوري لإدارة المتجر لمطابقة الإيصال وإيداع الرصيد في محفظتك خلال لحظات. شكراً لصبرك! ❤️</i>"
+            )
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            markup.add(types.InlineKeyboardButton("💰 عرض المحفظة", callback_data="wallet_main"))
+            try:
+                bot.edit_message_text(auto_forward_text, chat_id=message.chat.id, message_id=wait_msg.message_id, reply_markup=markup, parse_mode="HTML")
+            except Exception:
+                bot.send_message(message.chat.id, auto_forward_text, reply_markup=markup, parse_mode="HTML")
+            return
+
         fail_text = (
             "⚠️ <b>تعذر التحقق التلقائي من رقم المعاملة:</b>\n"
             f"<blockquote>{html.escape(error_msg)}</blockquote>\n\n"

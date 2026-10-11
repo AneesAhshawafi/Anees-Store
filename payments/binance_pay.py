@@ -33,6 +33,11 @@ class BinancePayProvider(BasePaymentProvider):
         """Returns True if Binance Pay ID is configured."""
         return bool(config.BINANCE_PAY_ID)
 
+    def _get_proxies(self):
+        if config.BINANCE_PROXY_URL:
+            return {"http": config.BINANCE_PROXY_URL, "https": config.BINANCE_PROXY_URL}
+        return None
+
     def _sync_server_time(self):
         """Calculates time difference between local clock and Binance server."""
         now = time.time()
@@ -40,7 +45,7 @@ class BinancePayProvider(BasePaymentProvider):
             return  # Cache time offset for 5 minutes
 
         try:
-            resp = requests.get("https://api.binance.com/api/v3/time", timeout=5)
+            resp = requests.get("https://api.binance.com/api/v3/time", timeout=5, proxies=self._get_proxies())
             if resp.status_code == 200:
                 server_time = resp.json().get("serverTime", int(now * 1000))
                 local_time = int(now * 1000)
@@ -114,8 +119,9 @@ class BinancePayProvider(BasePaymentProvider):
             sig = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
             url = f"https://api.binance.com/sapi/v1/pay/transactions?{query}&signature={sig}"
             headers = {"X-MBX-APIKEY": api_key}
+            proxies = self._get_proxies()
 
-            resp = requests.get(url, headers=headers, timeout=12)
+            resp = requests.get(url, headers=headers, timeout=12, proxies=proxies)
             if resp.status_code != 200:
                 # Handle possible timestamp sync retry
                 if resp.status_code == 400 and resp.json().get("code") == -1021:
@@ -126,17 +132,24 @@ class BinancePayProvider(BasePaymentProvider):
                     query = f"timestamp={ts}&recvWindow=60000"
                     sig = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
                     url = f"https://api.binance.com/sapi/v1/pay/transactions?{query}&signature={sig}"
-                    resp = requests.get(url, headers=headers, timeout=12)
+                    resp = requests.get(url, headers=headers, timeout=12, proxies=proxies)
 
             data = resp.json()
             if not data.get("success") or "data" not in data:
-                error_msg = data.get("errorMessage") or data.get("msg") or f"HTTP {resp.status_code}"
-                logger.error(f"Binance SAPI error: {error_msg}")
+                raw_err = data.get("errorMessage") or data.get("msg") or f"HTTP {resp.status_code}"
+                logger.error(f"Binance SAPI error: {raw_err}")
+                
+                is_geo = "restricted location" in str(raw_err).lower() or "eligibility" in str(raw_err).lower()
+                user_msg = (
+                    "خادم الاستضافة متواجد في منطقة خاضعة لقيود بينانس الجغرافية (US). جاري تحويل المعاملة تلقائياً لمراجعة وتأكيد الإدارة."
+                    if is_geo else f"تعذر استعلام بينانس: {raw_err}"
+                )
                 return {
                     "verified": False,
-                    "error": f"تعذر استعلام بينانس: {error_msg}",
+                    "error": user_msg,
                     "reference_id": clean_ref,
-                    "requires_admin_review": True
+                    "requires_admin_review": True,
+                    "is_geo_restricted": is_geo
                 }
 
             transactions = data.get("data", [])
